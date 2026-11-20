@@ -428,7 +428,7 @@ async function openDisputeAction(el){
   el.disabled=true;
   try {
     await api('buyer.open-dispute',{order_item_id:el.dataset.openDispute,reason:reason.trim(),details});
-    notify('Your case has been opened. The unpaid seller payout is now on hold.');
+    notify('Your case has been opened. Any unpaid seller payout is now blocked while the case is reviewed.');
     loadDashboardTab();
   } catch(error){notify(error.message);el.disabled=false;}
 }
