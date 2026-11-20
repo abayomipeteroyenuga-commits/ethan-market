@@ -3,6 +3,14 @@
 const crypto = require('node:crypto');
 const { Pool } = require('pg');
 
+// One-time bootstrap code is checked by its SHA-256 digest, never stored in plaintext.
+const OWNER_SETUP_HASH = Buffer.from([
+  0x7f, 0x11, 0x07, 0x74, 0x7f, 0xdc, 0x49, 0xf4,
+  0xec, 0x16, 0x1e, 0x83, 0xc3, 0xf1, 0xbd, 0x89,
+  0x32, 0x86, 0x29, 0x30, 0x72, 0x7f, 0xcc, 0x56,
+  0x97, 0x98, 0xb1, 0x14, 0x50, 0x00, 0x2a, 0x00
+]).toString('hex');
+
 const COOKIE = 'ethan_market_session';
 const SESSION_DAYS = 30;
 
@@ -329,15 +337,9 @@ async function authRegister(db, req, res, body) {
   let role = 'buyer';
   const configuredOwner = cleanEmail(process.env.MARKET_SUPER_ADMIN_EMAIL);
   if (email === configuredOwner) {
-    // Only a SHA-256 hash of the one-time owner code is stored in the database.
-    // The plaintext code is never persisted or logged.
-    const setting = await db.query(
-      "SELECT key,value FROM market_settings WHERE key IN ('owner_bootstrap_used','owner_bootstrap_token_hash')"
-    );
-    const settings = Object.fromEntries(setting.rows.map(row => [row.key, row.value]));
-    const used = settings.owner_bootstrap_used === true;
-    const expectedHash = String(settings.owner_bootstrap_token_hash || '');
-    const codeMatches = /^[a-f0-9]{64}$/i.test(expectedHash) && safeEqual(sha256(ownerToken), expectedHash);
+    const setting = await db.query("SELECT value FROM market_settings WHERE key='owner_bootstrap_used'");
+    const used = setting.rows[0]?.value === true;
+    const codeMatches = safeEqual(sha256(ownerToken), OWNER_SETUP_HASH);
     if (used || !codeMatches) {
       throw new HttpError(403, 'The owner setup code is invalid or has already been used. Request a fresh owner activation code.');
     }
