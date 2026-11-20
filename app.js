@@ -431,7 +431,7 @@ document.addEventListener('click',async e=>{
   const edit=e.target.closest('[data-edit-product]');if(edit){const product=(state.sellerData?.products||[]).find(p=>p.id===edit.dataset.editProduct);if(product)openProductEditor(product);return;}
   if(e.target.closest('#open-cart')){openCart();return;}
   if(e.target.closest('#close-cart')||e.target===$('#drawer-backdrop')){closeCart();return;}
-  if(e.target.closest('#account-button')){if(state.user)openDashboard();else openAuth('login');return;}
+  if(e.target.closest('#account-button')){if(state.user){e.preventDefault();openDashboard();}return;}
   if(e.target.closest('#seller-cta')){openSellerApplication();return;}
   if(e.target.closest('#checkout-button')){openCheckout();return;}
   if(e.target.closest('#logout-button')){logout();return;}
@@ -473,25 +473,28 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCart();$$('.mo
 $('#year').textContent=new Date().getFullYear();
 
 async function start() {
+  // Open registration immediately. Do not make visitors wait for catalogue
+  // or database requests before they can see the account form.
+  const params = new URLSearchParams(location.search);
+  const directRegistration =
+    location.pathname === '/register' ||
+    location.pathname === '/register/' ||
+    params.get('auth') === 'register';
+  if (directRegistration) openAuth('register');
+
   await initPublicData();
   await hydrateCart();
   await refreshSession();
   renderCart();
   await verifyPaymentFromUrl();
 
-  // Allow a shareable, direct registration URL without requiring the visitor
-  // to open Account and switch from Sign in to Create account.
-  const params = new URLSearchParams(location.search);
-  const directRegistration =
-    (location.pathname === '/register' || location.pathname === '/register/') ||
-    params.get('auth') === 'register';
-  if (directRegistration) {
-    if (state.user) openDashboard('overview');
-    else openAuth('register');
+  if (directRegistration && state.user) {
+    closeModal('auth-modal');
+    openDashboard('overview');
   }
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('/sw.js?v=20261120-market-register-v1.3', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=20261120-market-register-v1.4', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 start();
