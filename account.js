@@ -3,6 +3,18 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const ownerEmail = 'abayomipeteroyenuga@gmail.com';
+  const growthKey = 'ethan-market-growth-attribution-v1';
+  function growthPayload() {
+    const params = new URLSearchParams(location.search);
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(growthKey) || '{}') || {}; } catch {}
+    if (!saved.ref && params.get('ref')) saved.ref = String(params.get('ref')).trim().toUpperCase().slice(0,40);
+    if (!saved.campaign && params.get('utm_campaign')) saved.campaign = String(params.get('utm_campaign')).trim().toLowerCase().slice(0,100);
+    if (!saved.source && params.get('utm_source')) saved.source = String(params.get('utm_source')).trim().slice(0,80);
+    if (!saved.medium && params.get('utm_medium')) saved.medium = String(params.get('utm_medium')).trim().slice(0,80);
+    try { localStorage.setItem(growthKey, JSON.stringify(saved)); } catch {}
+    return {referral_code:saved.ref||'',campaign_slug:saved.campaign||'',utm_source:saved.source||'',utm_medium:saved.medium||''};
+  }
 
   function setMode(mode, updateUrl = true) {
     const registering = mode === 'register';
@@ -94,6 +106,7 @@
     button.disabled = true;
     button.textContent = 'Creating your account…';
     const payload = {
+      ...growthPayload(),
       full_name: $('register-name').value.trim(),
       phone: $('register-phone').value.trim(),
       email: $('register-email').value.trim(),
