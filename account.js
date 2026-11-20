@@ -19,6 +19,14 @@
 
   function setMode(mode, updateUrl = true) {
     const registering = mode === 'register';
+    if (registering) {
+      const attribution = growthPayload();
+      api('growth.track', {
+        event_type:'signup_view',campaign_slug:attribution.campaign_slug,
+        source:attribution.utm_source,medium:attribution.utm_medium,
+        referral_code:attribution.referral_code,path:location.pathname
+      }).catch(() => {});
+    }
     $('login-panel').hidden = registering;
     $('register-panel').hidden = !registering;
     $('login-tab').setAttribute('aria-selected', String(!registering));
