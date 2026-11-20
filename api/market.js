@@ -612,6 +612,7 @@ async function growthTrack(db,req,body) {
 
 async function growthPromoPreview(db,req,body) {
   const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  await rateLimit(db,'promo-preview',user.id,20,15);
   const items=Array.isArray(body.items)?body.items:[];
   if(!items.length||items.length>30) throw new HttpError(400,'Add products to your basket before applying a code.');
   const ids=[...new Set(items.map(x=>text(x.product_id,80)).filter(x=>/^[0-9a-f-]{36}$/i.test(x)))];
@@ -830,7 +831,8 @@ async function applySeller(db, req, body) {
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id,store_name,slug,seller_status`,
       [user.id,storeName,slug,text(body.description,1500),text(body.phone,40),text(body.whatsapp,40),['individual','registered_business'].includes(body.business_type)?body.business_type:'individual',text(body.city,80),text(body.state,80),text(body.bank_name,120),encryptField(body.bank_code),encryptField(body.account_number),text(body.account_name,120),defaultCommission]
     );
-    await trackGrowthEvent(db,{event_type:'seller_application',user_id:user.id,referral_code:(await ensureGrowthProfile(db,user.id)).referral_code});
+    const referredBy=await db.query('SELECT referral_code FROM market_growth_attributions WHERE referred_user_id=$1',[user.id]);
+    await trackGrowthEvent(db,{event_type:'seller_application',user_id:user.id,referral_code:referredBy.rows[0]?.referral_code||''});
     await audit(db,user.id,'SELLER_APPLICATION_SUBMITTED','seller',rows[0].id);
     return { seller: rows[0] };
   } catch(e) { if(e.code==='23505') throw new HttpError(409,'That store address is already in use.'); throw e; }
@@ -1101,8 +1103,9 @@ async function finalizePaid(db, transaction) {
       );
       await client.query("UPDATE market_promo_redemptions SET status='redeemed',redeemed_at=now() WHERE order_id=$1 AND status='reserved'",[order.id]);
       await client.query(
-        `UPDATE market_growth_attributions SET status='first_order',first_order_id=$2,first_order_at=now()
-         WHERE referred_user_id=$1 AND status='signed_up'`,[order.buyer_id,order.id]
+        `UPDATE market_growth_attributions SET status=CASE WHEN status='seller_approved' THEN status ELSE 'first_order' END,
+         first_order_id=COALESCE(first_order_id,$2),first_order_at=COALESCE(first_order_at,now())
+         WHERE referred_user_id=$1 AND first_order_at IS NULL`,[order.buyer_id,order.id]
       );
       const referralOwner=await client.query(
         `SELECT o.affiliate_user_id AS referrer_user_id,g.referral_code,g.affiliate_status,g.affiliate_commission_bps
@@ -1640,11 +1643,12 @@ async function adminAction(db,req,body) {
     const status=['approved','paid','void'].includes(body.status)?body.status:null;
     if(!status) throw new HttpError(400,'Invalid affiliate conversion status.');
     if(status==='paid'&&!text(body.payout_reference,140)) throw new HttpError(400,'Record the cleared bank transfer reference first.');
+    const expected=status==='paid'?'approved':'pending';
     const result=await db.query(
       `UPDATE market_affiliate_conversions SET status=$2,payout_reference=CASE WHEN $2='paid' THEN $3 ELSE payout_reference END,
        paid_at=CASE WHEN $2='paid' THEN now() ELSE paid_at END
-       WHERE id=$1 AND status IN ('pending','approved') RETURNING affiliate_user_id,commission_kobo,order_id`,
-      [text(body.id,80),status,text(body.payout_reference,140)]
+       WHERE id=$1 AND status=$4 RETURNING affiliate_user_id,commission_kobo,order_id`,
+      [text(body.id,80),status,text(body.payout_reference,140),expected]
     );
     if(!result.rows.length) throw new HttpError(409,'Affiliate conversion cannot be updated.');
     await createNotification(db,result.rows[0].affiliate_user_id,{
@@ -1661,7 +1665,10 @@ async function adminAction(db,req,body) {
     if(!rows.length) throw new HttpError(404,'Seller not found.');
     if(status==='approved') {
       await db.query("UPDATE market_users SET role='seller',updated_at=now() WHERE id=$1 AND role='buyer'",[rows[0].user_id]);
-      await db.query("UPDATE market_growth_attributions SET status='seller_approved',seller_approved_at=now() WHERE referred_user_id=$1",[rows[0].user_id]);
+      await db.query(
+        `UPDATE market_growth_attributions SET status=CASE WHEN first_order_at IS NOT NULL THEN status ELSE 'seller_approved' END,
+         seller_approved_at=COALESCE(seller_approved_at,now()) WHERE referred_user_id=$1`,[rows[0].user_id]
+      );
     }
     if(status==='suspended') await db.query("UPDATE market_users SET role='buyer',updated_at=now() WHERE id=$1 AND role='seller'",[rows[0].user_id]);
     await createNotification(db,rows[0].user_id,{
