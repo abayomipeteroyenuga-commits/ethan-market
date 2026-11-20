@@ -5,7 +5,8 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const state = {
   user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, payments_enabled: false },
   category: 'all', filter: 'all', query: '', sort: 'featured', cart: readCart(), wishlist: new Set(),
-  authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null
+  authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null,
+  unreadNotifications: 0, notificationTimer: null, notificationTopId: null
 };
 const money = kobo => '₦' + (Number(kobo || 0) / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 });
 const nairaToKobo = value => Math.max(0, Math.round(Number(value || 0) * 100));
@@ -237,20 +238,38 @@ function openDashboard(tab) {
   const role = state.user.role;
   const tabs = role === 'super_admin' || role === 'admin' ? [
     ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['settings','Settings']
-  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['sell','Become a seller']];
+  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['notifications','Notifications'],['sell','Become a seller']];
   state.dashboardTabs = tabs;
   state.dashboardTab = tab || tabs[0][0];
   $('#dashboard-title').textContent = role === 'super_admin' || role === 'admin' ? 'Marketplace control.' : role === 'seller' ? 'Seller studio.' : 'Your account.';
   renderDashboardTabs(); showModal('dashboard-modal'); loadDashboardTab();
 }
+function updateNotificationBadge() {
+  const button=$('#account-button');
+  if(button) {
+    let dot=button.querySelector('.notification-dot');
+    if(!dot) { dot=document.createElement('span'); dot.className='notification-dot'; button.appendChild(dot); }
+    dot.hidden=state.unreadNotifications<1;
+    dot.textContent=state.unreadNotifications>9?'9+':String(state.unreadNotifications);
+    button.setAttribute('aria-label',state.unreadNotifications?(`My account, ${state.unreadNotifications} unread notifications`):'My account');
+  }
+}
 function renderDashboardTabs() {
-  $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>`<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${label}</button>`).join('');
+  $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>`<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${label}${id==='notifications'&&state.unreadNotifications? ` <span class="notification-count">${state.unreadNotifications>99?'99+':state.unreadNotifications}</span>`:''}</button>`).join('');
+  updateNotificationBadge();
 }
 async function loadDashboardTab() {
   renderDashboardTabs();
   const el = $('#dashboard-content'); el.innerHTML = '<div class="dashboard-loading">Loading your workspace…</div>';
   const tab = state.dashboardTab;
   try {
+    if(tab==='notifications') {
+      const data=await api('notifications.list');
+      state.unreadNotifications=Number(data.unread_count||0);
+      renderNotifications(data);
+      renderDashboardTabs();
+      return;
+    }
     if (state.user.role === 'super_admin' || state.user.role === 'admin') {
       const data = tab === 'overview' ? await api('admin.overview') : tab === 'settings' ? await api('admin.list',{kind:'settings'}) : await api('admin.list',{kind:tab});
       state.adminData[tab] = data; renderAdminTab(tab,data); return;
@@ -263,6 +282,68 @@ async function loadDashboardTab() {
     if (tab === 'wishlist') { const data=await api('wishlist.list'); renderBuyerWishlist(data.products||[]); return; }
     if (tab === 'sell') { el.innerHTML=`<div class="dash-panel"><h3>Open a store on Ethan</h3><p class="modal-intro">Complete a seller application. After approval you can add products, view orders and track payouts.</p><button class="button button-primary" id="dashboard-apply-seller">Apply to become a seller →</button></div>`; return; }
   } catch(e) { el.innerHTML=`<div class="dash-panel"><p class="form-error">${html(e.message)}</p><button class="dash-action" id="dashboard-retry">Try again</button></div>`; }
+}
+function renderNotifications(data) {
+  const el=$('#dashboard-content');
+  const items=Array.isArray(data.notifications)?data.notifications:[];
+  state.unreadNotifications=Number(data.unread_count||0);
+  const content=items.map(n=>`<article class="market-notification ${n.read_at?'':'unread'}">
+    <div class="market-notification-copy">
+      <div class="market-notification-heading"><strong>${html(n.title)}</strong><span>${formatDate(n.created_at)}</span></div>
+      <p>${html(n.message)}</p>
+      <small>${html(textStatus(n.type))}</small>
+    </div>
+    <button class="dash-action ${n.read_at?'':'primary'}" data-notification-open="${escAttr(n.id)}" data-target-tab="${escAttr(n.target_tab||'orders')}">View</button>
+  </article>`).join('');
+  el.innerHTML=`<div class="dash-panel">
+    <div class="notification-panel-head"><div><h3>Your notifications</h3><p class="modal-intro">${state.unreadNotifications} unread · New orders, payment updates, dispatches, buyer cases and settlements appear here.</p></div>
+    ${state.unreadNotifications?`<button class="dash-action" id="notifications-mark-all">Mark all as read</button>`:''}</div>
+    <div class="notification-list">${content||'<div class="dash-empty">You are all caught up. New marketplace activity will appear here.</div>'}</div>
+  </div>`;
+  updateNotificationBadge();
+}
+async function pollNotifications(announceNew=false) {
+  if(!state.user || !['buyer','seller'].includes(state.user.role)) return;
+  try {
+    const data=await api('notifications.list');
+    const items=Array.isArray(data.notifications)?data.notifications:[];
+    const latest=items[0];
+    if(announceNew && state.notificationTopId && latest && latest.id!==state.notificationTopId) {
+      notify('New ETHAN MARKET notification: '+latest.title);
+    }
+    if(latest) state.notificationTopId=latest.id;
+    state.unreadNotifications=Number(data.unread_count||0);
+    renderDashboardTabs();
+    const modal=$('#dashboard-modal');
+    if(modal && !modal.hidden && state.dashboardTab==='notifications') renderNotifications(data);
+  } catch {}
+}
+function startNotificationPolling() {
+  if(state.notificationTimer) clearInterval(state.notificationTimer);
+  state.notificationTimer=null;
+  state.notificationTopId=null;
+  state.unreadNotifications=0;
+  if(!state.user || !['buyer','seller'].includes(state.user.role)) { updateNotificationBadge(); return; }
+  pollNotifications(false);
+  state.notificationTimer=setInterval(()=>pollNotifications(true),30000);
+}
+async function openNotificationAction(button) {
+  const id=button.dataset.notificationOpen;
+  const target=button.dataset.targetTab||'orders';
+  try {
+    await api('notifications.mark-read',{id});
+    await pollNotifications(false);
+    state.dashboardTab=state.dashboardTabs.some(([tab])=>tab===target)?target:'notifications';
+    loadDashboardTab();
+  } catch(error) { notify(error.message); }
+}
+async function markAllNotificationsRead() {
+  try {
+    await api('notifications.mark-read',{all:true});
+    await pollNotifications(false);
+    if(state.dashboardTab==='notifications') loadDashboardTab();
+    notify('All notifications marked as read.');
+  } catch(error) { notify(error.message); }
 }
 function renderMetric(label,value) { return `<div class="metric-card"><small>${html(label)}</small><b>${html(value)}</b></div>`; }
 function renderAdminTab(tab,data) {
@@ -383,6 +464,7 @@ async function refreshSession(){
   try{const data=await api('auth.me');state.user=data.user;state.seller=data.seller||null;if(state.user)await syncWishlist();}catch{state.user=null;state.seller=null;}
   const button=$('#account-button');button.title=state.user?`Signed in as ${state.user.full_name}`:'My account';
   const label=button.querySelector('.action-label');if(label)label.textContent=state.user?(state.user.role==='super_admin'?'Admin':'Account'):'Account';
+  startNotificationPolling();
 }
 async function submitCheckout(e){
   e.preventDefault();$('#checkout-error').textContent='';
@@ -400,7 +482,7 @@ async function verifyPaymentFromUrl(){
   try{const result=await api('payment.verify',{reference});state.cart=[];saveCart();renderCart();history.replaceState({},'',location.pathname);notify(`Payment confirmed. Order ${result.order.order_number} is paid.`);openDashboard('orders');}
   catch(e){notify(e.message);history.replaceState({},'',location.pathname);}
 }
-async function logout(){try{await api('auth.logout');}catch{}state.user=null;state.seller=null;state.wishlist.clear();closeModal('dashboard-modal');notify('You have signed out.');}
+async function logout(){try{await api('auth.logout');}catch{}if(state.notificationTimer)clearInterval(state.notificationTimer);state.notificationTimer=null;state.notificationTopId=null;state.unreadNotifications=0;state.user=null;state.seller=null;state.wishlist.clear();updateNotificationBadge();closeModal('dashboard-modal');notify('You have signed out.');}
 async function adminAction(el){
   const action=el.dataset.adminAction;const id=el.dataset.id;const status=el.dataset.status;let payload={id,status};
   if(action==='product-status' && el.dataset.featured) payload.featured=el.dataset.featured==='true';
@@ -487,6 +569,8 @@ document.addEventListener('click',async e=>{
   const qty=e.target.closest('[data-qty]');if(qty){changeQuantity(qty.dataset.qty,Number(qty.dataset.delta));return;}
   const authMode=e.target.closest('[data-auth-mode]');if(authMode){setAuthMode(authMode.dataset.authMode);return;}
   const dashTab=e.target.closest('[data-dash-tab]');if(dashTab){state.dashboardTab=dashTab.dataset.dashTab;loadDashboardTab();return;}
+  const notificationOpen=e.target.closest('[data-notification-open]');if(notificationOpen){openNotificationAction(notificationOpen);return;}
+  if(e.target.closest('#notifications-mark-all')){markAllNotificationsRead();return;}
   const action=e.target.closest('[data-admin-action]');if(action){adminAction(action);return;}
   const fulfill=e.target.closest('[data-fulfill]');if(fulfill){sellerFulfillAction(fulfill);return;}
   const adminConfirmDelivery=e.target.closest('[data-admin-confirm-delivery]');if(adminConfirmDelivery){adminConfirmDeliveryAction(adminConfirmDelivery);return;}
@@ -535,7 +619,8 @@ $('#dashboard-content').addEventListener('submit',async e=>{
 $('#dashboard-content').addEventListener('change',async e=>{
   if(e.target.matches('[data-order-status]')&&e.target.value){try{await api('admin.order-status',{id:e.target.dataset.orderStatus,status:e.target.value});notify('Order status updated.');loadDashboardTab();}catch(err){notify(err.message);}}
 });
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCart();$$('.modal-backdrop').filter(m=>!m.hidden).forEach(m=>closeModal(m.id));}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollNotifications(true);});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCart();$('.modal-backdrop').filter(m=>!m.hidden).forEach(m=>closeModal(m.id));}});
 $('#year').textContent=new Date().getFullYear();
 
 async function start() {
