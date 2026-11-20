@@ -1,4 +1,4 @@
-const CACHE='ethan-market-v1.2-brand';
+const CACHE='ethan-market-v1.4-registration';
 const SHELL=['/','/index.html','/styles.css','/app.js','/manifest.webmanifest','/assets/ethan-market-logo.png','/assets/ethan-market-icon-192.png','/assets/ethan-market-icon-512.png','/assets/favicon.png','/assets/apple-touch-icon.png'];
 const NETWORK_FIRST=new Set(['/','/index.html','/styles.css','/app.js','/manifest.webmanifest']);
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting())));
