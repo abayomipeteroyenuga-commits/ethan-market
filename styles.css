@@ -29,6 +29,7 @@
 .product-title-link{color:inherit;text-decoration:none}.product-title-link:hover{text-decoration:underline;text-decoration-color:#b99655;text-underline-offset:3px}.store-link{color:inherit;text-decoration:none;font:inherit}.store-link:hover{text-decoration:underline}
 
 /* ETHAN MARKET buyer/seller notifications */
+.account-action{position:relative}
 .notification-dot{position:absolute;top:2px;right:1px;min-width:17px;height:17px;padding:0 4px;border-radius:99px;background:#c24f45;color:#fff;font:800 9px/17px 'DM Sans',sans-serif;text-align:center;box-shadow:0 0 0 2px #fff}
 .notification-dot[hidden]{display:none}
 .notification-count{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;margin-left:4px;border-radius:99px;background:#b94c43;color:#fff;font-size:9px;font-weight:800;line-height:18px}
