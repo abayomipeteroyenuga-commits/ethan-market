@@ -329,10 +329,17 @@ async function authRegister(db, req, res, body) {
   let role = 'buyer';
   const configuredOwner = cleanEmail(process.env.MARKET_SUPER_ADMIN_EMAIL);
   if (email === configuredOwner) {
-    const setting = await db.query("SELECT value FROM market_settings WHERE key='owner_bootstrap_used'");
-    const used = setting.rows[0]?.value === true;
-    if (used || !process.env.MARKET_OWNER_BOOTSTRAP_TOKEN || !safeEqual(ownerToken, process.env.MARKET_OWNER_BOOTSTRAP_TOKEN)) {
-      throw new HttpError(403, 'Owner account activation requires the one-time setup code.');
+    // Only a SHA-256 hash of the one-time owner code is stored in the database.
+    // The plaintext code is never persisted or logged.
+    const setting = await db.query(
+      "SELECT key,value FROM market_settings WHERE key IN ('owner_bootstrap_used','owner_bootstrap_token_hash')"
+    );
+    const settings = Object.fromEntries(setting.rows.map(row => [row.key, row.value]));
+    const used = settings.owner_bootstrap_used === true;
+    const expectedHash = String(settings.owner_bootstrap_token_hash || '');
+    const codeMatches = /^[a-f0-9]{64}$/i.test(expectedHash) && safeEqual(sha256(ownerToken), expectedHash);
+    if (used || !codeMatches) {
+      throw new HttpError(403, 'The owner setup code is invalid or has already been used. Request a fresh owner activation code.');
     }
     role = 'super_admin';
   }
@@ -346,7 +353,10 @@ async function authRegister(db, req, res, body) {
       [fullName,email,phone,hash,role]
     );
     user = created.rows[0];
-    if (role === 'super_admin') await client.query("INSERT INTO market_settings(key,value) VALUES('owner_bootstrap_used','true'::jsonb) ON CONFLICT(key) DO UPDATE SET value='true'::jsonb,updated_at=now()");
+    if (role === 'super_admin') {
+      await client.query("INSERT INTO market_settings(key,value) VALUES('owner_bootstrap_used','true'::jsonb) ON CONFLICT(key) DO UPDATE SET value='true'::jsonb,updated_at=now()");
+      await client.query("DELETE FROM market_settings WHERE key='owner_bootstrap_token_hash'");
+    }
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); if (e.code === '23505') throw new HttpError(409, 'An account with this email already exists.'); throw e; }
   finally { client.release(); }
