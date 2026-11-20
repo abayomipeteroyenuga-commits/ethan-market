@@ -15,7 +15,7 @@ function getPool(){
 function h(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function clean(value,max=1000){return String(value??'').replace(/\s+/g,' ').trim().slice(0,max);}
 function schemaScript(value){return JSON.stringify(value).replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026');}
-function page({title,description,canonical,image,body,structuredData,robots='index,follow,max-image-preview:large'}){
+function page({title,description,canonical,image,body,structuredData,ogType='website',robots='index,follow,max-image-preview:large'}){
   const json=structuredData?'<script type="application/ld+json">'+schemaScript(structuredData)+'</script>':'';
   return `<!doctype html>
 <html lang="en-NG">
@@ -26,7 +26,7 @@ function page({title,description,canonical,image,body,structuredData,robots='ind
 <meta name="description" content="${h(description)}">
 <meta name="robots" content="${h(robots)}">
 <link rel="canonical" href="${h(canonical)}">
-<meta property="og:type" content="product">
+<meta property="og:type" content="${h(ogType)}">
 <meta property="og:site_name" content="ETHAN MARKET">
 <meta property="og:title" content="${h(title)}">
 <meta property="og:description" content="${h(description)}">
@@ -58,7 +58,7 @@ module.exports=async function handler(req,res){
     const url=new URL(req.url||'/',ORIGIN);const type=url.searchParams.get('type');
     if(type==='product'){
       const id=url.searchParams.get('id')||'';
-      if(!/^[0-9a-f-]{36}$/i.test(id))return send(res,404,page({title:'Product not found | ETHAN MARKET',description:'This product is not available.',canonical:ORIGIN+'/'}));
+      if(!/^[0-9a-f-]{36}$/i.test(id))return send(res,404,page({title:'Product not found | ETHAN MARKET',description:'This product is not available.',canonical:ORIGIN+'/',robots:'noindex,nofollow'}));
       const {rows}=await getPool().query(`
         SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.image_url,p.stock_qty,p.updated_at,
           c.name AS category_name,s.store_name,s.slug AS store_slug,s.city,s.state,
@@ -67,7 +67,7 @@ module.exports=async function handler(req,res){
         LEFT JOIN market_categories c ON c.id=p.category_id
         LEFT JOIN (SELECT product_id,round(avg(rating)::numeric,1) AS avg_rating,count(*) AS review_count FROM market_reviews GROUP BY product_id) rv ON rv.product_id=p.id
         WHERE p.id=$1 AND p.status='active' AND s.seller_status='approved' LIMIT 1`,[id]);
-      if(!rows.length)return send(res,404,page({title:'Product not found | ETHAN MARKET',description:'This product is not available.',canonical:ORIGIN+'/'}));
+      if(!rows.length)return send(res,404,page({title:'Product not found | ETHAN MARKET',description:'This product is not available.',canonical:ORIGIN+'/',robots:'noindex,nofollow'}));
       const p=rows[0];const canonical=ORIGIN+'/product/'+encodeURIComponent(p.slug)+'/'+p.id;
       const description=clean(p.description,280)||('Shop '+p.name+' from '+p.store_name+' on ETHAN MARKET Nigeria.');
       const image=/^https:\/\//i.test(p.image_url||'')?p.image_url:'';
@@ -93,11 +93,11 @@ module.exports=async function handler(req,res){
       <div class="seller"><div class="eyebrow">Seller storefront</div><p><a href="/store/${encodeURIComponent(p.store_slug)}">${h(p.store_name)} →</a></p></div>
       <div class="trust">Shop through ETHAN MARKET checkout. Keep your order details, delivery tracking and support correspondence for your records.</div>
       </div></article><script src="/assets/seo-product.js?v=20261120-seo1" defer></script>`;
-      return send(res,200,page({title:p.name+' | '+p.store_name+' | ETHAN MARKET Nigeria',description,canonical,image,body,structuredData:productSchema}));
+      return send(res,200,page({title:p.name+' | '+p.store_name+' | ETHAN MARKET Nigeria',description,canonical,image,body,structuredData:productSchema,ogType:'product'}));
     }
     if(type==='store'){
       const slug=clean(url.searchParams.get('slug'),100);
-      if(!slug)return send(res,404,page({title:'Store not found | ETHAN MARKET',description:'This store is not available.',canonical:ORIGIN+'/'}));
+      if(!slug)return send(res,404,page({title:'Store not found | ETHAN MARKET',description:'This store is not available.',canonical:ORIGIN+'/',robots:'noindex,nofollow'}));
       const {rows}=await getPool().query(`
         SELECT s.id,s.store_name,s.slug,s.description,s.city,s.state,s.phone,s.created_at
         FROM market_sellers s WHERE s.slug=$1 AND s.seller_status='approved' LIMIT 1`,[slug]);
