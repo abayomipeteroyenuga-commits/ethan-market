@@ -134,6 +134,29 @@ const schema = [
     payout_reference text NOT NULL DEFAULT '', paid_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS market_payouts_status_idx ON market_payouts(status, created_at DESC)`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS delivered_at timestamptz`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS buyer_confirmed_at timestamptz`,
+  `ALTER TABLE market_payouts ADD COLUMN IF NOT EXISTS eligible_at timestamptz`,
+  `ALTER TABLE market_payouts ADD COLUMN IF NOT EXISTS hold_reason text NOT NULL DEFAULT ''`,
+  `CREATE TABLE IF NOT EXISTS market_disputes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_item_id uuid NOT NULL UNIQUE REFERENCES market_order_items(id),
+    order_id uuid NOT NULL REFERENCES market_orders(id),
+    buyer_id uuid NOT NULL REFERENCES market_users(id),
+    seller_id uuid NOT NULL REFERENCES market_sellers(id),
+    reason text NOT NULL CHECK (reason IN ('item_not_received','damaged','not_as_described','wrong_item','digital_access','other')),
+    details text NOT NULL,
+    status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','under_review','resolved_seller','resolved_buyer')),
+    seller_response text NOT NULL DEFAULT '',
+    resolution_notes text NOT NULL DEFAULT '',
+    resolution_reference text NOT NULL DEFAULT '',
+    opened_at timestamptz NOT NULL DEFAULT now(),
+    resolved_at timestamptz,
+    resolved_by uuid REFERENCES market_users(id),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_disputes_status_idx ON market_disputes(status,opened_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS market_disputes_seller_idx ON market_disputes(seller_id,status,opened_at DESC)`,
   `CREATE TABLE IF NOT EXISTS market_wishlists (
     user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
     product_id uuid NOT NULL REFERENCES market_products(id) ON DELETE CASCADE,
@@ -178,7 +201,7 @@ async function ensureSchema() {
     const requiredTables = [
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_orders','market_order_items','market_payments',
-      'market_payouts','market_wishlists','market_reviews','market_settings',
+      'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
       'market_audit_logs','market_rate_limits'
     ];
     const countTables = async (executor) => {
@@ -496,14 +519,17 @@ async function applySeller(db, req, body) {
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
-  const [products, orders, payouts] = await Promise.all([
+  const [products, orders, payouts, disputes] = await Promise.all([
     db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
-    db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address
+    db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
-    db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id])
+    db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,eligible_at,hold_reason,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id]),
+    db.query(`SELECT d.*,o.order_number,oi.product_name,u.full_name AS buyer_name FROM market_disputes d
+      JOIN market_orders o ON o.id=d.order_id JOIN market_order_items oi ON oi.id=d.order_item_id
+      JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id])
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
-  return { seller: sellerPublic(seller), products: products.rows, orders: orders.rows, payouts: payouts.rows, totals: totals.rows[0] };
+  return { seller: sellerPublic(seller), products: products.rows, orders: orders.rows, payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0] };
 }
 
 function sellerPublic(s) {
@@ -683,10 +709,15 @@ async function finalizePaid(db, transaction) {
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
       const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,quantity',[order.id]);
       for (const row of changed) if (row.product_id) await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+      const holdSetting=await client.query("SELECT value FROM market_settings WHERE key='seller_payout_hold_days'");
+      const holdDays=Math.min(30,Math.max(1,Number(holdSetting.rows[0]?.value)||7));
       await client.query(
-        `INSERT INTO market_payouts(order_item_id,order_id,seller_id,gross_kobo,commission_kobo,net_kobo)
-         SELECT id,order_id,seller_id,unit_price_kobo*quantity,commission_kobo,seller_net_kobo FROM market_order_items WHERE order_id=$1
-         ON CONFLICT(order_item_id) DO NOTHING`,[order.id]
+        `INSERT INTO market_payouts(order_item_id,order_id,seller_id,gross_kobo,commission_kobo,net_kobo,eligible_at,hold_reason)
+         SELECT id,order_id,seller_id,unit_price_kobo*quantity,commission_kobo,seller_net_kobo,
+           CASE WHEN product_type='digital' THEN now()+($2::text||' days')::interval ELSE NULL END,
+           CASE WHEN product_type='digital' THEN 'Digital product protection period' ELSE 'Awaiting buyer delivery confirmation' END
+         FROM market_order_items WHERE order_id=$1
+         ON CONFLICT(order_item_id) DO NOTHING`,[order.id,holdDays]
       );
     }
     orderInfo={id:order.id,order_number:order.order_number,total_kobo:Number(order.total_kobo),payment_status:'paid'};
@@ -758,9 +789,14 @@ async function buyerOrders(db,req) {
     `SELECT o.id,o.order_number,o.subtotal_kobo,o.shipping_kobo,o.total_kobo,o.payment_status,o.status,o.created_at,
       json_agg(json_build_object('id',oi.id,'product_id',oi.product_id,'product_name',oi.product_name,'product_type',oi.product_type,'quantity',oi.quantity,
        'unit_price_kobo',oi.unit_price_kobo,'fulfillment_status',oi.fulfillment_status,'tracking_number',oi.tracking_number,'tracking_carrier',oi.tracking_carrier,
+       'buyer_confirmed_at',oi.buyer_confirmed_at,'delivered_at',oi.delivered_at,'payout_status',p.status,'payout_eligible_at',p.eligible_at,
+       'dispute_id',d.id,'dispute_status',d.status,'dispute_reason',d.reason,
        'download_url',CASE WHEN oi.product_type='digital' AND o.payment_status='paid' THEN oi.digital_delivery_url ELSE '' END)
        ORDER BY oi.created_at) AS items
-     FROM market_orders o JOIN market_order_items oi ON oi.order_id=o.id LEFT JOIN market_products p ON p.id=oi.product_id WHERE o.buyer_id=$1
+     FROM market_orders o JOIN market_order_items oi ON oi.order_id=o.id
+     LEFT JOIN market_payouts p ON p.order_item_id=oi.id
+     LEFT JOIN market_disputes d ON d.order_item_id=oi.id
+     WHERE o.buyer_id=$1
      GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100`,[user.id]
   );
   return {orders:rows};
@@ -799,23 +835,157 @@ async function addReview(db,req,body) {
 async function sellerFulfill(db,req,body) {
   const user=await requireRole(req,db,['seller','admin','super_admin']);
   const seller=await getSellerByUser(db,user.id,true);
-  const status=['processing','dispatched','delivered'].includes(body.status)?body.status:null;
-  if(!status) throw new HttpError(400,'Choose a valid fulfilment status.');
+  const status=['processing','dispatched'].includes(body.status)?body.status:null;
+  if(!status) throw new HttpError(400,'Sellers can mark an item processing or dispatched. The buyer confirms receipt.');
   const itemId=text(body.order_item_id,80);
   const {rows}=await db.query(
     `UPDATE market_order_items SET fulfillment_status=$3,tracking_number=$4,tracking_carrier=$5
      WHERE id=$1 AND seller_id=$2 AND EXISTS(SELECT 1 FROM market_orders o WHERE o.id=market_order_items.order_id AND o.payment_status='paid')
      RETURNING order_id`,[itemId,seller.id,status,text(body.tracking_number,100),text(body.tracking_carrier,100)]
   );
-  if(!rows.length) throw new HttpError(404,'Order item not found.');
+  if(!rows.length) throw new HttpError(404,'Paid order item not found for this seller.');
   await db.query(
     `UPDATE market_orders o SET status=CASE
-      WHEN NOT EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status<>'delivered') THEN 'delivered'
+      WHEN NOT EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status NOT IN ('delivered','cancelled')) THEN 'delivered'
       WHEN EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status='dispatched') THEN 'partially_dispatched'
       ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[rows[0].order_id]
   );
   await audit(db,user.id,'ORDER_ITEM_FULFILMENT_UPDATED','order_item',itemId,{status});
   return {ok:true};
+}
+
+async function protectionHoldDays(db) {
+  const settings=await getSettings(db);
+  return Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7));
+}
+
+async function buyerConfirmDelivery(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  const itemId=text(body.order_item_id,80);
+  const client=await db.connect();
+  try {
+    await client.query('BEGIN');
+    const {rows}=await client.query(
+      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,o.buyer_id,o.payment_status
+       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+       WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
+    );
+    const item=rows[0];
+    if(!item) throw new HttpError(404,'Order item not found.');
+    if(item.buyer_id!==user.id && !['admin','super_admin'].includes(user.role)) throw new HttpError(403,'This order does not belong to your account.');
+    if(item.payment_status!=='paid') throw new HttpError(409,'Only a paid order can be confirmed.');
+    if(item.product_type!=='physical') throw new HttpError(400,'Digital orders do not need delivery confirmation.');
+    if(!['dispatched','delivered'].includes(item.fulfillment_status)) throw new HttpError(409,'The seller must mark the item as dispatched before you can confirm receipt.');
+    const active=await client.query("SELECT id FROM market_disputes WHERE order_item_id=$1 AND status IN ('open','under_review')",[itemId]);
+    if(active.rows.length) throw new HttpError(409,'This item has an open dispute. Resolve it before confirming receipt.');
+    const holdDays=await protectionHoldDays(client);
+    await client.query(
+      "UPDATE market_order_items SET fulfillment_status='delivered',delivered_at=COALESCE(delivered_at,now()),buyer_confirmed_at=now() WHERE id=$1",
+      [itemId]
+    );
+    await client.query(
+      `UPDATE market_payouts SET eligible_at=now()+($2::text||' days')::interval,
+       hold_reason=$3, status=CASE WHEN status='held' THEN 'held' ELSE 'pending' END
+       WHERE order_item_id=$1 AND status NOT IN ('paid','reversed')`,
+      [itemId,holdDays,'Buyer confirmed receipt — protection period active']
+    );
+    await client.query(
+      `UPDATE market_orders o SET status=CASE
+       WHEN NOT EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status NOT IN ('delivered','cancelled')) THEN 'delivered'
+       WHEN EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status='dispatched') THEN 'partially_dispatched'
+       ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[item.order_id]
+    );
+    await client.query('COMMIT');
+    await audit(db,user.id,'BUYER_CONFIRMED_DELIVERY','order_item',itemId,{protection_hold_days:holdDays});
+    return {ok:true,eligible_in_days:holdDays};
+  } catch(error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function buyerOpenDispute(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  const itemId=text(body.order_item_id,80);
+  const allowed=['item_not_received','damaged','not_as_described','wrong_item','digital_access','other'];
+  const reason=allowed.includes(body.reason)?body.reason:null;
+  const details=text(body.details,2000);
+  if(!reason || details.length<20) throw new HttpError(400,'Choose a reason and describe the issue in at least 20 characters.');
+  const client=await db.connect();
+  try {
+    await client.query('BEGIN');
+    const {rows}=await client.query(
+      `SELECT oi.id,oi.order_id,oi.seller_id,o.buyer_id,o.payment_status
+       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+       WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
+    );
+    const item=rows[0];
+    if(!item) throw new HttpError(404,'Order item not found.');
+    if(item.buyer_id!==user.id && !['admin','super_admin'].includes(user.role)) throw new HttpError(403,'This order does not belong to your account.');
+    if(item.payment_status!=='paid') throw new HttpError(409,'A dispute can only be opened for a paid order.');
+    const existing=await client.query('SELECT id FROM market_disputes WHERE order_item_id=$1',[itemId]);
+    if(existing.rows.length) throw new HttpError(409,'A case has already been opened for this item. Use the existing case or contact support.');
+    const created=await client.query(
+      `INSERT INTO market_disputes(order_item_id,order_id,buyer_id,seller_id,reason,details)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [item.id,item.order_id,item.buyer_id,item.seller_id,reason,details]
+    );
+    await client.query(
+      "UPDATE market_payouts SET status=CASE WHEN status='paid' THEN 'paid' ELSE 'held' END,hold_reason='Buyer dispute open — payout release blocked' WHERE order_item_id=$1 AND status<>'reversed'",
+      [itemId]
+    );
+    await client.query('COMMIT');
+    await audit(db,user.id,'BUYER_OPENED_DISPUTE','dispute',created.rows[0].id,{reason});
+    return {dispute_id:created.rows[0].id,status:'open'};
+  } catch(error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function sellerRespondDispute(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const seller=await getSellerByUser(db,user.id,true);
+  const id=text(body.dispute_id,80), response=text(body.response,2000);
+  if(response.length<10) throw new HttpError(400,'Please provide a response of at least 10 characters.');
+  const {rows}=await db.query(
+    `UPDATE market_disputes SET seller_response=$3,status='under_review',updated_at=now()
+     WHERE id=$1 AND seller_id=$2 AND status IN ('open','under_review') RETURNING id`,
+    [id,seller.id,response]
+  );
+  if(!rows.length) throw new HttpError(404,'Open dispute not found for this store.');
+  await audit(db,user.id,'SELLER_RESPONDED_TO_DISPUTE','dispute',id);
+  return {ok:true,status:'under_review'};
+}
+
+async function adminResolveDispute(db,req,body) {
+  const user=await requireRole(req,db,['admin','super_admin']);
+  const id=text(body.dispute_id,80), outcome=body.outcome;
+  const notes=text(body.notes,2000), reference=text(body.refund_reference,140);
+  if(!['seller','buyer'].includes(outcome) || notes.length<10) throw new HttpError(400,'Choose an outcome and add resolution notes.');
+  if(outcome==='buyer' && reference.length<3) throw new HttpError(400,'Complete the refund through your payment provider first, then enter its refund reference.');
+  const client=await db.connect();
+  try {
+    await client.query('BEGIN');
+    const {rows}=await client.query("SELECT id,order_item_id FROM market_disputes WHERE id=$1 AND status IN ('open','under_review') FOR UPDATE",[id]);
+    if(!rows.length) throw new HttpError(404,'Open dispute not found.');
+    const status=outcome==='seller'?'resolved_seller':'resolved_buyer';
+    await client.query(
+      `UPDATE market_disputes SET status=$2,resolution_notes=$3,resolution_reference=$4,resolved_at=now(),resolved_by=$5,updated_at=now() WHERE id=$1`,
+      [id,status,notes,reference,user.id]
+    );
+    if(outcome==='seller') {
+      await client.query(
+        "UPDATE market_payouts SET status='pending',eligible_at=COALESCE(eligible_at,now()),hold_reason='Dispute resolved in seller favour — administrator approval required' WHERE order_item_id=$1 AND status NOT IN ('paid','reversed')",
+        [rows[0].order_item_id]
+      );
+    } else {
+      await client.query(
+        "UPDATE market_payouts SET status='reversed',hold_reason='Dispute resolved in buyer favour — refund reference recorded' WHERE order_item_id=$1 AND status<>'paid'",
+        [rows[0].order_item_id]
+      );
+    }
+    await client.query('COMMIT');
+    await audit(db,user.id,'DISPUTE_RESOLVED','dispute',id,{outcome,refund_reference:outcome==='buyer'?reference:''});
+    return {ok:true,status};
+  } catch(error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
 }
 
 async function adminOverview(db,req) {
@@ -846,8 +1016,19 @@ async function adminList(db,req,kind) {
     return {orders:rows};
   }
   if(kind==='payouts') {
-    const {rows}=await db.query(`SELECT p.*,s.store_name,u.full_name,u.email,o.order_number,s.bank_name,s.bank_code,s.account_number,s.account_name FROM market_payouts p JOIN market_sellers s ON s.id=p.seller_id JOIN market_users u ON u.id=s.user_id JOIN market_orders o ON o.id=p.order_id ORDER BY CASE p.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,p.created_at DESC LIMIT 500`);
+    const {rows}=await db.query(`SELECT p.*,s.store_name,u.full_name,u.email,o.order_number,s.bank_name,s.bank_code,s.account_number,s.account_name
+      FROM market_payouts p JOIN market_sellers s ON s.id=p.seller_id JOIN market_users u ON u.id=s.user_id
+      JOIN market_orders o ON o.id=p.order_id ORDER BY CASE p.status WHEN 'held' THEN 0 WHEN 'pending' THEN 1 WHEN 'approved' THEN 2 ELSE 3 END,p.created_at DESC LIMIT 500`);
     return {payouts:rows.map(p=>({...p,bank_code:decryptField(p.bank_code),account_number:decryptField(p.account_number)}))};
+  }
+  if(kind==='disputes') {
+    const {rows}=await db.query(`SELECT d.*,o.order_number,oi.product_name,oi.quantity,oi.product_type,
+      b.full_name AS buyer_name,b.email AS buyer_email,s.store_name,u.full_name AS seller_name,u.email AS seller_email
+      FROM market_disputes d JOIN market_orders o ON o.id=d.order_id
+      JOIN market_order_items oi ON oi.id=d.order_item_id
+      JOIN market_users b ON b.id=d.buyer_id JOIN market_sellers s ON s.id=d.seller_id
+      JOIN market_users u ON u.id=s.user_id ORDER BY CASE d.status WHEN 'open' THEN 0 WHEN 'under_review' THEN 1 ELSE 2 END,d.opened_at DESC LIMIT 500`);
+    return {disputes:rows};
   }
   if(kind==='settings') return {settings:await getSettings(db)};
   throw new HttpError(400,'Unknown administration list.');
@@ -877,14 +1058,28 @@ async function adminAction(db,req,body) {
     const status=['approved','held','paid'].includes(body.status)?body.status:null;
     if(!status) throw new HttpError(400,'Invalid payout status.');
     if(status==='paid'&&!text(body.payout_reference,140)) throw new HttpError(400,'A bank transfer reference is required to record a completed payout.');
-    const {rows}=await db.query(
-      `UPDATE market_payouts SET status=$2,payout_reference=CASE WHEN $2='paid' THEN $3 ELSE payout_reference END,
-       paid_at=CASE WHEN $2='paid' THEN now() ELSE paid_at END WHERE id=$1 AND status<>'reversed' AND ($2<>'paid' OR status='approved') RETURNING id`,
-      [id,status,text(body.payout_reference,140)]
-    );
-    if(!rows.length) throw new HttpError(404,'Payout record not found.');
+    let rows;
+    if(status==='approved') {
+      const result=await db.query(
+        `UPDATE market_payouts p SET status='approved',hold_reason='Approved for manual bank transfer'
+         WHERE p.id=$1 AND p.status='pending' AND p.eligible_at IS NOT NULL AND p.eligible_at<=now()
+         AND NOT EXISTS(SELECT 1 FROM market_disputes d WHERE d.order_item_id=p.order_item_id AND d.status IN ('open','under_review'))
+         RETURNING p.id`,[id]
+      ); rows=result.rows;
+    } else if(status==='held') {
+      const result=await db.query("UPDATE market_payouts SET status='held',hold_reason='Administrator hold' WHERE id=$1 AND status IN ('pending','approved') RETURNING id",[id]);
+      rows=result.rows;
+    } else {
+      const result=await db.query(
+        `UPDATE market_payouts SET status='paid',payout_reference=$2,paid_at=now(),hold_reason=''
+         WHERE id=$1 AND status='approved' AND NOT EXISTS(SELECT 1 FROM market_disputes d WHERE d.order_item_id=market_payouts.order_item_id AND d.status IN ('open','under_review'))
+         RETURNING id`,[id,text(body.payout_reference,140)]
+      ); rows=result.rows;
+    }
+    if(!rows.length) throw new HttpError(409,'Payout cannot be changed. Check its protection period, dispute status and current payout state.');
     await audit(db,user.id,'PAYOUT_STATUS_CHANGED','payout',id,{status}); return {ok:true};
   }
+  if(action==='admin.dispute-resolve') return adminResolveDispute(db,req,body);
   if(action==='admin.settings') {
     const commission=Math.min(Math.max(parseInt(body.commission_bps,10)||0,0),5000);
     const shipping=money(body.physical_shipping_kobo);
@@ -913,7 +1108,7 @@ async function storeDetails(db, slug) {
 async function handle(db,req,res,body) {
   const action=text(body.action,80);
   if(action==='health') return {status:'ok',service:'ETHAN MARKET',database:'connected',payments:!!process.env.PAYSTACK_SECRET_KEY};
-  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 1000), payments_enabled:!!process.env.PAYSTACK_SECRET_KEY, support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
+  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 1000), seller_payout_hold_days:Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7)), payments_enabled:!!process.env.PAYSTACK_SECRET_KEY, support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
   if(action==='auth.register') return authRegister(db,req,res,body);
   if(action==='auth.login') return authLogin(db,req,res,body);
   if(action==='auth.me') return authMe(db,req);
@@ -928,6 +1123,9 @@ async function handle(db,req,res,body) {
   if(action==='seller.product.save') return saveProduct(db,req,body);
   if(action==='seller.fulfill') return sellerFulfill(db,req,body);
   if(action==='buyer.orders') return buyerOrders(db,req);
+  if(action==='buyer.confirm-delivery') return buyerConfirmDelivery(db,req,body);
+  if(action==='buyer.open-dispute') return buyerOpenDispute(db,req,body);
+  if(action==='seller.respond-dispute') return sellerRespondDispute(db,req,body);
   if(action==='wishlist.list') return wishlist(db,req);
   if(action==='wishlist.toggle') return toggleWishlist(db,req,body);
   if(action==='reviews.create') return addReview(db,req,body);
