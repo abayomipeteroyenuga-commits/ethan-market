@@ -101,7 +101,7 @@ module.exports=async function handler(req,res){
       const {rows}=await getPool().query(`
         SELECT s.id,s.store_name,s.slug,s.description,s.city,s.state,s.phone,s.created_at
         FROM market_sellers s WHERE s.slug=$1 AND s.seller_status='approved' LIMIT 1`,[slug]);
-      if(!rows.length)return send(res,404,page({title:'Store not found | ETHAN MARKET',description:'This store is not available.',canonical:ORIGIN+'/'}));
+      if(!rows.length)return send(res,404,page({title:'Store not found | ETHAN MARKET',description:'This store is not available.',canonical:ORIGIN+'/',robots:'noindex,nofollow'}));
       const store=rows[0];
       const products=(await getPool().query(`
         SELECT p.id,p.name,p.slug,p.price_kobo,p.image_url,p.product_type,p.stock_qty,p.updated_at
