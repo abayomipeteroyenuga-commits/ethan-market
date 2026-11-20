@@ -1507,6 +1507,10 @@ async function adminResolveDispute(db,req,body) {
         "UPDATE market_payouts SET status='reversed',hold_reason='Dispute resolved in buyer favour — refund reference recorded' WHERE order_item_id=$1 AND status<>'paid'",
         [rows[0].order_item_id]
       );
+      await client.query(
+        "UPDATE market_affiliate_conversions SET status='void' WHERE order_id=$1 AND status IN ('pending','approved')",
+        [rows[0].order_id]
+      );
     }
     const resolutionText=outcome==='seller'
       ? `The case for ${rows[0].product_name} in order ${rows[0].order_number} was resolved in the seller's favour. Seller settlement is eligible for administrator approval.`
@@ -1589,10 +1593,12 @@ async function adminAction(db,req,body) {
       );
       if(!updated.rows.length) throw new HttpError(404,'Campaign not found.');
     } else {
-      await db.query(
-        `INSERT INTO market_growth_campaigns(name,slug,source,medium,budget_kobo,status,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7)`,[name,slug,text(body.source,80),text(body.medium,80),budget,status,user.id]
-      );
+      try {
+        await db.query(
+          `INSERT INTO market_growth_campaigns(name,slug,source,medium,budget_kobo,status,created_by)
+           VALUES($1,$2,$3,$4,$5,$6,$7)`,[name,slug,text(body.source,80),text(body.medium,80),budget,status,user.id]
+        );
+      } catch(error) { if(error.code==='23505') throw new HttpError(409,'That campaign slug already exists. Choose another slug.'); throw error; }
     }
     await audit(db,user.id,'GROWTH_CAMPAIGN_SAVED','campaign',slug,{status});
     return {ok:true};
@@ -1603,10 +1609,12 @@ async function adminAction(db,req,body) {
     const maxDiscount=money(body.max_discount_kobo),minimum=money(body.min_subtotal_kobo);
     const maxUses=body.max_redemptions?Math.min(100000,Math.max(1,parseInt(body.max_redemptions,10)||1)):null;
     if(code.length<4) throw new HttpError(400,'Promo codes must contain at least four letters or numbers.');
-    await db.query(
-      `INSERT INTO market_promo_codes(code,discount_bps,max_discount_kobo,min_subtotal_kobo,max_redemptions,active,created_by)
-       VALUES($1,$2,$3,$4,$5,true,$6)`,[code,bps,maxDiscount,minimum,maxUses,user.id]
-    );
+    try {
+      await db.query(
+        `INSERT INTO market_promo_codes(code,discount_bps,max_discount_kobo,min_subtotal_kobo,max_redemptions,active,created_by)
+         VALUES($1,$2,$3,$4,$5,true,$6)`,[code,bps,maxDiscount,minimum,maxUses,user.id]
+      );
+    } catch(error) { if(error.code==='23505') throw new HttpError(409,'That promo code already exists. Choose another code.'); throw error; }
     await audit(db,user.id,'GROWTH_PROMO_CREATED','promo',code,{discount_bps:bps,max_redemptions:maxUses});
     return {ok:true,code};
   }
