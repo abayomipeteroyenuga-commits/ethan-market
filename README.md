@@ -61,6 +61,19 @@ The marketplace's configured seller commission is the primary current platform r
 - Seller settlement ledger with account details and transfer reference
 - Dispute queue and conditional seller-payout approval
 
+## Growth and acquisition system
+
+The admin dashboard includes a Growth workspace for acquisition campaigns, promo codes, referral reporting and affiliate review.
+
+- Every existing buyer and seller receives a personal referral code and shareable invite link.
+- Referral attribution is captured on registration and retained through later checkout; reports count sign-ups, first paid purchases and approved sellers.
+- Campaign links use UTM-style `utm_campaign`, `utm_source` and `utm_medium` values. The dashboard reports visits, sign-up views, registrations, paid orders and GMV by campaign.
+- Administrators can create, pause and reactivate campaigns and can create/deactivate promo codes with discount limits, minimum basket values and redemption caps.
+- Promo discounts are calculated server-side and capped by the marketplace fee for the affected basket, so seller net earnings are not reduced by the promotion.
+- Buyers and sellers may apply to the affiliate programme. Administrators approve participants and configure their share of ETHAN MARKET's marketplace fee. Eligible conversions are recorded for review; affiliate transfers are manually approved and recorded, not automatic.
+- Affiliate rewards on an order are voided when a buyer dispute is resolved in the buyer's favour.
+- Growth events include page/product/store views and signup/checkout activity. Tracking is rate limited and is not an assurance of unique human visitors.
+
 ## Payment behaviour
 
 The backend initializes Paystack transactions server-side. It verifies the transaction status, exact amount, currency and reference before setting an order to paid. Webhook events are validated against the raw request body and the current timestamped Paystack signature format, with legacy signature support. Fulfilment and payout-ledger creation are idempotent.
