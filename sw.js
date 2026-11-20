@@ -1,6 +1,6 @@
-const CACHE='ethan-market-v1.4-registration';
+const CACHE='ethan-market-v1.5-account-page';
 const SHELL=['/','/index.html','/styles.css','/app.js','/manifest.webmanifest','/assets/ethan-market-logo.png','/assets/ethan-market-icon-192.png','/assets/ethan-market-icon-512.png','/assets/favicon.png','/assets/apple-touch-icon.png'];
-const NETWORK_FIRST=new Set(['/','/index.html','/styles.css','/app.js','/manifest.webmanifest']);
+const NETWORK_FIRST=new Set(['/','/index.html','/styles.css','/app.js','/manifest.webmanifest','/account','/account/','/account.html','/account.js','/login','/login/','/register','/register/']);
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{
