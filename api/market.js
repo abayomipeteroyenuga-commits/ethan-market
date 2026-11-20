@@ -641,6 +641,7 @@ async function adminGrowthOverview(db,req) {
       (SELECT count(*) FROM market_users WHERE created_at>=now()-interval '30 days')::int AS signups_30d,
       (SELECT count(*) FROM market_growth_attributions WHERE created_at>=now()-interval '30 days')::int AS referred_signups_30d,
       (SELECT count(*) FROM market_growth_attributions WHERE first_order_at>=now()-interval '30 days')::int AS referred_buyers_30d,
+      (SELECT count(*) FROM market_growth_attributions WHERE seller_approved_at>=now()-interval '30 days')::int AS referred_sellers_30d,
       (SELECT count(*) FROM market_sellers WHERE seller_status='approved' AND updated_at>=now()-interval '30 days')::int AS approved_sellers_30d,
       (SELECT count(*) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::int AS paid_orders_30d,
       (SELECT COALESCE(sum(total_kobo),0) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::bigint AS gmv_30d,
