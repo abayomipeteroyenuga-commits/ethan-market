@@ -46,3 +46,13 @@
 .market-notification-copy small{text-transform:capitalize;white-space:normal}
 .market-notification .dash-action{flex:0 0 auto}
 @media(max-width:560px){.notification-panel-head{align-items:flex-start;flex-direction:column}.market-notification{align-items:flex-start;gap:10px;padding:12px}.market-notification-heading{flex-direction:column;gap:3px}.market-notification .dash-action{align-self:center}}
+
+/* ETHAN MARKET growth engine */
+.growth-link-row,.growth-promo-entry{display:flex;align-items:center;gap:8px}
+.growth-link-row input,.growth-promo-entry input{min-width:0;flex:1;border:1px solid #dfe6e9;border-radius:7px;padding:10px 11px;color:#34485a;background:#f9fbfc;font-size:10px}
+.growth-promo-entry button{white-space:nowrap}
+.growth-affiliate-summary{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:10px 0 18px}
+.growth-affiliate-rate{width:78px;min-width:65px;border:1px solid #dfe4e8;border-radius:6px;padding:7px;color:#18334e}
+.dash-form .form-error{grid-column:1/-1}
+.dash-form .button{justify-self:start}
+@media(max-width:560px){.growth-link-row,.growth-promo-entry{align-items:stretch;flex-direction:column}.growth-link-row input,.growth-promo-entry input,.growth-promo-entry button{width:100%}.growth-affiliate-summary{align-items:flex-start;flex-direction:column}}
