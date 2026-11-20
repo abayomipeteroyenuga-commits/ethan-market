@@ -840,7 +840,8 @@ async function sellerFulfill(db,req,body) {
   const itemId=text(body.order_item_id,80);
   const {rows}=await db.query(
     `UPDATE market_order_items SET fulfillment_status=$3,tracking_number=$4,tracking_carrier=$5
-     WHERE id=$1 AND seller_id=$2 AND EXISTS(SELECT 1 FROM market_orders o WHERE o.id=market_order_items.order_id AND o.payment_status='paid')
+     WHERE id=$1 AND seller_id=$2 AND fulfillment_status NOT IN ('delivered','cancelled')
+       AND EXISTS(SELECT 1 FROM market_orders o WHERE o.id=market_order_items.order_id AND o.payment_status='paid')
      RETURNING order_id`,[itemId,seller.id,status,text(body.tracking_number,100),text(body.tracking_carrier,100)]
   );
   if(!rows.length) throw new HttpError(404,'Paid order item not found for this seller.');
@@ -954,6 +955,48 @@ async function sellerRespondDispute(db,req,body) {
   return {ok:true,status:'under_review'};
 }
 
+async function adminConfirmDelivery(db,req,body) {
+  const user=await requireRole(req,db,['admin','super_admin']);
+  const itemId=text(body.order_item_id,80), evidence=text(body.evidence,500);
+  if(evidence.length<5) throw new HttpError(400,'Record the delivery evidence or tracking confirmation before continuing.');
+  const client=await db.connect();
+  try {
+    await client.query('BEGIN');
+    const {rows}=await client.query(
+      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,o.payment_status
+       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+       WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
+    );
+    const item=rows[0];
+    if(!item) throw new HttpError(404,'Order item not found.');
+    if(item.payment_status!=='paid' || item.product_type!=='physical') throw new HttpError(409,'Only paid physical items can be confirmed as delivered here.');
+    if(['delivered','cancelled'].includes(item.fulfillment_status)) throw new HttpError(409,'This item is already delivered or cancelled.');
+    const active=await client.query("SELECT id FROM market_disputes WHERE order_item_id=$1 AND status IN ('open','under_review')",[itemId]);
+    if(active.rows.length) throw new HttpError(409,'Resolve the open buyer dispute before confirming delivery.');
+    const holdDays=await protectionHoldDays(client);
+    await client.query(
+      "UPDATE market_order_items SET fulfillment_status='delivered',delivered_at=now() WHERE id=$1",
+      [itemId]
+    );
+    await client.query(
+      `UPDATE market_payouts SET eligible_at=now()+($2::text||' days')::interval,
+       hold_reason=$3,status=CASE WHEN status='held' THEN 'held' ELSE 'pending' END
+       WHERE order_item_id=$1 AND status NOT IN ('paid','reversed')`,
+      [itemId,holdDays,'Delivery verified by marketplace administration — protection period active']
+    );
+    await client.query(
+      `UPDATE market_orders o SET status=CASE
+       WHEN NOT EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status NOT IN ('delivered','cancelled')) THEN 'delivered'
+       WHEN EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status='dispatched') THEN 'partially_dispatched'
+       ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[item.order_id]
+    );
+    await client.query('COMMIT');
+    await audit(db,user.id,'ADMIN_CONFIRMED_DELIVERY','order_item',itemId,{evidence,protection_hold_days:holdDays});
+    return {ok:true,eligible_in_days:holdDays};
+  } catch(error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
 async function adminResolveDispute(db,req,body) {
   const user=await requireRole(req,db,['admin','super_admin']);
   const id=text(body.dispute_id,80), outcome=body.outcome;
@@ -1012,7 +1055,7 @@ async function adminList(db,req,kind) {
     return {products:rows};
   }
   if(kind==='orders') {
-    const {rows}=await db.query(`SELECT o.*,COALESCE(json_agg(json_build_object('product_name',i.product_name,'quantity',i.quantity,'seller_id',i.seller_id,'fulfillment_status',i.fulfillment_status)) FILTER(WHERE i.id IS NOT NULL),'[]'::json) AS items FROM market_orders o LEFT JOIN market_order_items i ON i.order_id=o.id GROUP BY o.id ORDER BY o.created_at DESC LIMIT 250`);
+    const {rows}=await db.query(`SELECT o.*,COALESCE(json_agg(json_build_object('id',i.id,'product_name',i.product_name,'product_type',i.product_type,'quantity',i.quantity,'seller_id',i.seller_id,'fulfillment_status',i.fulfillment_status,'tracking_number',i.tracking_number,'tracking_carrier',i.tracking_carrier)) FILTER(WHERE i.id IS NOT NULL),'[]'::json) AS items FROM market_orders o LEFT JOIN market_order_items i ON i.order_id=o.id GROUP BY o.id ORDER BY o.created_at DESC LIMIT 250`);
     return {orders:rows};
   }
   if(kind==='payouts') {
@@ -1079,6 +1122,7 @@ async function adminAction(db,req,body) {
     if(!rows.length) throw new HttpError(409,'Payout cannot be changed. Check its protection period, dispute status and current payout state.');
     await audit(db,user.id,'PAYOUT_STATUS_CHANGED','payout',id,{status}); return {ok:true};
   }
+  if(action==='admin.confirm-delivery') return adminConfirmDelivery(db,req,body);
   if(action==='admin.dispute-resolve') return adminResolveDispute(db,req,body);
   if(action==='admin.settings') {
     const commission=Math.min(Math.max(parseInt(body.commission_bps,10)||0,0),5000);
