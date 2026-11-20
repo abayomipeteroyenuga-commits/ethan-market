@@ -237,7 +237,7 @@ function openDashboard(tab) {
   const role = state.user.role;
   const tabs = role === 'super_admin' || role === 'admin' ? [
     ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['settings','Settings']
-  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['payouts','Payouts'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['sell','Become a seller']];
+  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['sell','Become a seller']];
   state.dashboardTabs = tabs;
   state.dashboardTab = tab || tabs[0][0];
   $('#dashboard-title').textContent = role === 'super_admin' || role === 'admin' ? 'Marketplace control.' : role === 'seller' ? 'Seller studio.' : 'Your account.';
