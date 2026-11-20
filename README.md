@@ -14,12 +14,20 @@ ETHAN MARKET is a multi-vendor marketplace for physical and digital products, po
 ## Main routes
 
 - Storefront: `https://market.ethandigitalacademy.org/`
+- Product SEO pages: `/product/{slug}/{product-id}`
+- Seller storefronts: `/store/{store-slug}`
+- Buyer protection information: `/buyer-protection`
+- Dynamic product and store sitemaps: `/sitemap-products.xml`, `/sitemap-stores.xml`
 - Marketplace API: `/api/market`
 - Payment webhook: `/api/market-webhook`
 - Product image upload: `/api/market-upload`
 - Database health check: `/api/market?health=1`
 
-## Features
+## Revenue model
+
+The marketplace's configured seller commission is the primary current platform revenue stream. The default is 10% (1,000 basis points) of the product subtotal and can be changed by an administrator. Delivery charges are separate from the commission and should not automatically be reported as profit. Additional monetisation such as paid featured listings or seller subscriptions is a future option, not part of the current live revenue model.
+
+### Features
 
 ### Buyers
 
@@ -30,6 +38,8 @@ ETHAN MARKET is a multi-vendor marketplace for physical and digital products, po
 - Paystack checkout (once merchant keys are configured)
 - Server-side payment verification and webhook fulfilment
 - Digital delivery links are shown only in paid order history; physical order tracking is shown in the same area
+- Buyer receipt confirmation and per-item dispute opening
+- Seller dispute-response workspace and administrator case resolution
 - Product reviews after delivery
 
 ### Sellers
@@ -49,12 +59,17 @@ ETHAN MARKET is a multi-vendor marketplace for physical and digital products, po
 - Order status monitoring
 - Commission and delivery-fee settings
 - Seller settlement ledger with account details and transfer reference
+- Dispute queue and conditional seller-payout approval
 
 ## Payment behaviour
 
 The backend initializes Paystack transactions server-side. It verifies the transaction status, exact amount, currency and reference before setting an order to paid. Webhook events are validated against the raw request body and the current timestamped Paystack signature format, with legacy signature support. Fulfilment and payout-ledger creation are idempotent.
 
-Seller transfers are **not automatically initiated** by this first production release. The dashboard provides a payout ledger: the marketplace administrator approves a seller balance, makes the transfer through the merchant's bank/Paystack operations, then records the cleared transfer reference. Automated Paystack subaccount splits can be enabled as a later phase after the merchant account and seller bank verification process are confirmed.
+Seller transfers are **not automatically initiated** by this release. The dashboard provides an internal payable ledger. Physical-item payouts remain ineligible until the buyer confirms receipt; digital-item payouts receive the configured protection period (default 7 days). An open dispute changes an unpaid payout to held. After the protection period and dispute review, an administrator may approve a payout, complete the external bank/provider transfer, and record its cleared reference.
+
+This ledger is an operational control, **not escrow custody**. ETHAN MARKET must not claim that it independently holds or safeguards customer funds. Paystack split payments settle subaccount shares when the transaction settles, so they do not provide a delayed buyer-protection hold. A Nigerian merchant seeking a provider-managed manual payout arrangement must apply to Paystack and meet its registered-business, compliance and banking-partner conditions. Do not enable direct seller splits for protected orders unless an approved settlement design preserves the agreed protection period.
+
+Buyer-favour dispute resolutions require the administrator to complete the refund through the payment provider first and record the provider's refund reference. ETHAN MARKET records the decision; this release does not automatically issue Paystack refunds.
 
 ## Environment variables
 
@@ -115,6 +130,7 @@ The schema is initialized by the first successful API request using `CREATE TABL
 - `1.0.0`: multi-vendor storefront, backend API, authentication, seller/admin workflows, product images, order records and Paystack integration.
 - `1.1.0`: seller storefront pages, persistent-cart hydration, buyer product reviews, admin seller payout account visibility, current Paystack timestamped webhook signature parsing, security headers and cache rotation.
 - `1.1.1`: serialize first-run database schema creation across concurrent serverless cold starts using a PostgreSQL advisory lock.
+- `1.2.0`: buyer receipt confirmation, per-item dispute management, seller responses, conditional payout eligibility and crawlable product/store SEO pages with structured data and dynamic sitemaps.
 
 ## Operational notes
 
