@@ -780,7 +780,7 @@ async function start() {
     location.pathname === '/register' ||
     location.pathname === '/register/' ||
     params.get('auth') === 'register';
-  if (directRegistration) { openAuth('register'); trackGrowthEvent('signup_view'); }
+  if (directRegistration) openAuth('register');
 
   await initPublicData();
   await hydrateCart();
