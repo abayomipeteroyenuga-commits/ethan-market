@@ -1066,8 +1066,9 @@ async function adminConfirmDelivery(db,req,body) {
   try {
     await client.query('BEGIN');
     const {rows}=await client.query(
-      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,oi.product_name,o.payment_status,o.buyer_id,o.order_number
+      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,oi.product_name,o.payment_status,o.buyer_id,o.order_number,s.user_id AS seller_user_id
        FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+       JOIN market_sellers s ON s.id=oi.seller_id
        WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
     );
     const item=rows[0];
@@ -1097,6 +1098,11 @@ async function adminConfirmDelivery(db,req,body) {
       type:'delivery_verified',title:'Delivery evidence verified',
       message:`ETHAN MARKET administration verified delivery for ${item.product_name} in order ${item.order_number}. You can contact support or open a case if you believe this is incorrect.`,
       target_tab:'orders',dedupe_key:`buyer-admin-delivery-verified:${itemId}`,metadata:{order_item_id:itemId,order_number:item.order_number}
+    });
+    await createNotification(client,item.seller_user_id,{
+      type:'delivery_admin_verified',title:'Delivery verified by marketplace administration',
+      message:`Delivery of ${item.product_name} in order ${item.order_number} was independently verified. The seller protection period is now active.`,
+      target_tab:'orders',dedupe_key:`seller-admin-delivery-verified:${itemId}`,metadata:{order_item_id:itemId,order_number:item.order_number}
     });
     await client.query('COMMIT');
     await audit(db,user.id,'ADMIN_CONFIRMED_DELIVERY','order_item',itemId,{evidence,protection_hold_days:holdDays});
