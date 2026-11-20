@@ -431,7 +431,7 @@ document.addEventListener('click',async e=>{
   const edit=e.target.closest('[data-edit-product]');if(edit){const product=(state.sellerData?.products||[]).find(p=>p.id===edit.dataset.editProduct);if(product)openProductEditor(product);return;}
   if(e.target.closest('#open-cart')){openCart();return;}
   if(e.target.closest('#close-cart')||e.target===$('#drawer-backdrop')){closeCart();return;}
-  if(e.target.closest('#account-button')){if(state.user){e.preventDefault();openDashboard();}return;}
+  if(e.target.closest('#account-button')){return;}
   if(e.target.closest('#seller-cta')){openSellerApplication();return;}
   if(e.target.closest('#checkout-button')){openCheckout();return;}
   if(e.target.closest('#logout-button')){logout();return;}
