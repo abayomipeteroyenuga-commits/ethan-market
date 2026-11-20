@@ -255,7 +255,9 @@ function updateNotificationBadge() {
   }
 }
 function renderDashboardTabs() {
-  $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>`<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${label}${id==='notifications'&&state.unreadNotifications? ` <span class="notification-count">${state.unreadNotifications>99?'99+':state.unreadNotifications}</span>`:''}</button>`).join('');
+  if(Array.isArray(state.dashboardTabs)) {
+    $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>`<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${label}${id==='notifications'&&state.unreadNotifications? ` <span class="notification-count">${state.unreadNotifications>99?'99+':state.unreadNotifications}</span>`:''}</button>`).join('');
+  }
   updateNotificationBadge();
 }
 async function loadDashboardTab() {
