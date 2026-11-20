@@ -554,8 +554,8 @@ async function growthDashboard(db,req) {
   const profile=await ensureGrowthProfile(db,user.id);
   const [referrals,conversions]=await Promise.all([
     db.query(
-      `SELECT count(*)::int AS signups,count(*) FILTER(WHERE status='first_order')::int AS first_orders,
-       count(*) FILTER(WHERE status='seller_approved')::int AS approved_sellers
+      `SELECT count(*)::int AS signups,count(*) FILTER(WHERE first_order_at IS NOT NULL)::int AS first_orders,
+       count(*) FILTER(WHERE seller_approved_at IS NOT NULL)::int AS approved_sellers
        FROM market_growth_attributions WHERE referrer_user_id=$1`,[user.id]
     ),
     db.query(
@@ -639,7 +639,7 @@ async function adminGrowthOverview(db,req) {
     db.query(`SELECT
       (SELECT count(*) FROM market_users WHERE created_at>=now()-interval '30 days')::int AS signups_30d,
       (SELECT count(*) FROM market_growth_attributions WHERE created_at>=now()-interval '30 days')::int AS referred_signups_30d,
-      (SELECT count(*) FROM market_growth_attributions WHERE status='first_order' AND first_order_at>=now()-interval '30 days')::int AS referred_buyers_30d,
+      (SELECT count(*) FROM market_growth_attributions WHERE first_order_at>=now()-interval '30 days')::int AS referred_buyers_30d,
       (SELECT count(*) FROM market_sellers WHERE seller_status='approved' AND updated_at>=now()-interval '30 days')::int AS approved_sellers_30d,
       (SELECT count(*) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::int AS paid_orders_30d,
       (SELECT COALESCE(sum(total_kobo),0) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::bigint AS gmv_30d,
@@ -746,6 +746,7 @@ async function authMe(db, req) {
   const user = await currentUser(req, db, false);
   if (!user) return { user: null };
   const { rows } = await db.query('SELECT id,store_name,slug,description,seller_status,commission_bps,city,state FROM market_sellers WHERE user_id=$1', [user.id]);
+  await ensureGrowthProfile(db,user.id);
   return { user: publicUser(user), seller: rows[0] || null };
 }
 
@@ -1104,9 +1105,9 @@ async function finalizePaid(db, transaction) {
          WHERE referred_user_id=$1 AND status='signed_up'`,[order.buyer_id,order.id]
       );
       const referralOwner=await client.query(
-        `SELECT a.referrer_user_id,g.referral_code,g.affiliate_status,g.affiliate_commission_bps
-         FROM market_growth_attributions a JOIN market_growth_profiles g ON g.user_id=a.referrer_user_id
-         WHERE a.referred_user_id=$1 LIMIT 1`,[order.buyer_id]
+        `SELECT o.affiliate_user_id AS referrer_user_id,g.referral_code,g.affiliate_status,g.affiliate_commission_bps
+         FROM market_orders o JOIN market_growth_profiles g ON g.user_id=o.affiliate_user_id
+         WHERE o.id=$1 AND o.affiliate_user_id IS NOT NULL LIMIT 1`,[order.id]
       );
       if(referralOwner.rows[0]?.affiliate_status==='approved' && Number(referralOwner.rows[0].affiliate_commission_bps)>0) {
         const totals=await client.query(
