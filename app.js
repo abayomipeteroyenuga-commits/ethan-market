@@ -6,13 +6,36 @@ const state = {
   user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, payments_enabled: false },
   category: 'all', filter: 'all', query: '', sort: 'featured', cart: readCart(), wishlist: new Set(),
   authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null,
-  unreadNotifications: 0, notificationTimer: null, notificationTopId: null
+  unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null
 };
 const money = kobo => '₦' + (Number(kobo || 0) / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 });
 const nairaToKobo = value => Math.max(0, Math.round(Number(value || 0) * 100));
 const html = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 const textStatus = value => String(value || '').replaceAll('_',' ');
 const escAttr = value => html(value).replace(/`/g, '&#96;');
+const GROWTH_STORAGE_KEY = 'ethan-market-growth-attribution-v1';
+function readGrowthAttribution() {
+  try { return JSON.parse(localStorage.getItem(GROWTH_STORAGE_KEY)||'{}')||{}; } catch { return {}; }
+}
+function captureGrowthAttribution() {
+  const params=new URLSearchParams(location.search);
+  const current=readGrowthAttribution();
+  const next={...current};
+  if(!next.ref && params.get('ref')) next.ref=String(params.get('ref')).trim().toUpperCase().slice(0,40);
+  if(!next.campaign && params.get('utm_campaign')) next.campaign=String(params.get('utm_campaign')).trim().toLowerCase().slice(0,100);
+  if(!next.source && params.get('utm_source')) next.source=String(params.get('utm_source')).trim().slice(0,80);
+  if(!next.medium && params.get('utm_medium')) next.medium=String(params.get('utm_medium')).trim().slice(0,80);
+  try { localStorage.setItem(GROWTH_STORAGE_KEY,JSON.stringify(next)); } catch {}
+  return next;
+}
+function growthPayload() {
+  const item=readGrowthAttribution();
+  return {referral_code:item.ref||'',campaign_slug:item.campaign||'',utm_source:item.source||'',utm_medium:item.medium||''};
+}
+async function trackGrowthEvent(eventType) {
+  const data=readGrowthAttribution();
+  try { await api('growth.track',{event_type:eventType,campaign_slug:data.campaign||'',source:data.source||'',medium:data.medium||'',referral_code:data.ref||'',path:location.pathname}); } catch {}
+}
 
 function readCart() {
   try { const raw = JSON.parse(localStorage.getItem('ethan-market-cart-v1') || '[]'); return Array.isArray(raw) ? raw.filter(x => x && typeof x.product_id === 'string' && Number(x.quantity) > 0) : []; }
@@ -50,6 +73,7 @@ function updateOwnerTokenVisibility() {
 }
 function setAuthMode(mode) {
   state.authMode = mode;
+  if(mode==='register') trackGrowthEvent('signup_view');
   $('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.authMode === mode));
   const registering = mode === 'register';
   $('#auth-name-wrap').hidden = !registering;
@@ -202,6 +226,7 @@ async function showProduct(productId) {
     const found = state.products.find(p => p.id === productId);
     if (!found) return;
     const data = await api('products.detail',{id:productId}); const p = data.product; state.currentProduct = p;
+    trackGrowthEvent('product_view');
     $('#detail-content').innerHTML = `<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug || '')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price">${money(p.price_kobo)}</div><div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span>${Number(p.stock_qty)>0?'In stock':'Check availability'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
     showModal('detail-modal');
   } catch(e) { notify(e.message); }
@@ -210,6 +235,7 @@ async function showStore(slug) {
   if (!slug) return;
   try {
     const data = await api('store.detail', { slug });
+    trackGrowthEvent('store_view');
     const store = data.store, products = data.products || [];
     $('#detail-content').innerHTML = `<div class="store-page"><div class="store-page-head"><div class="store-avatar">${html(String(store.store_name||'E').trim().slice(0,1).toUpperCase())}</div><div><span class="eyebrow">ETHAN MARKET SELLER</span><h2 id="detail-name">${html(store.store_name)}</h2><p>${html([store.city,store.state].filter(Boolean).join(', ') || 'Nigeria')} · On ETHAN MARKET since ${formatDate(store.created_at)}</p></div></div><p class="store-page-description">${html(store.description || 'Welcome to our store.')}</p><div class="store-page-products"><div class="section-heading"><div><div class="eyebrow">THE STORE COLLECTION</div><h3>Available products</h3></div><span>${products.length} listed</span></div><div class="store-products-grid">${products.map(p=>`<article class="store-product"><div class="store-product-image">${imageContent(p)}</div><div><small>${html(p.category_name||'Marketplace')}</small><b>${html(p.name)}</b><strong>${money(p.price_kobo)}</strong><button class="dash-action primary" data-view="${escAttr(p.id)}">View product</button></div></article>`).join('') || '<p>No products are currently listed in this store.</p>'}</div></div></div>`;
     showModal('detail-modal');
@@ -228,7 +254,11 @@ function openCheckout() {
   $('#checkout-phone').value = state.user.phone || '';
   $('#checkout-total').textContent = money(cartTotal());
   $('#checkout-error').textContent = '';
+  $('#checkout-promo').value='';
+  $('#checkout-promo-feedback').textContent='';
+  state.promoPreview=null;
   closeCart(); showModal('checkout-modal');
+  trackGrowthEvent('checkout_started');
 }
 function formatDate(value) { try { return new Intl.DateTimeFormat('en-NG',{day:'2-digit',month:'short',year:'numeric'}).format(new Date(value)); } catch { return value || '—'; } }
 function statusPill(value) { const text = textStatus(value); return `<span class="status-pill ${html(value)}">${html(text)}</span>`; }
@@ -237,8 +267,8 @@ function openDashboard(tab) {
   if (!state.user) { openAuth('login'); return; }
   const role = state.user.role;
   const tabs = role === 'super_admin' || role === 'admin' ? [
-    ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['settings','Settings']
-  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['notifications','Notifications'],['sell','Become a seller']];
+    ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Growth'],['settings','Settings']
+  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Grow & refer'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['growth','Grow & refer'],['notifications','Notifications'],['sell','Become a seller']];
   state.dashboardTabs = tabs;
   state.dashboardTab = tab || tabs[0][0];
   $('#dashboard-title').textContent = role === 'super_admin' || role === 'admin' ? 'Marketplace control.' : role === 'seller' ? 'Seller studio.' : 'Your account.';
@@ -275,6 +305,9 @@ async function loadDashboardTab() {
     if (state.user.role === 'super_admin' || state.user.role === 'admin') {
       const data = tab === 'overview' ? await api('admin.overview') : tab === 'settings' ? await api('admin.list',{kind:'settings'}) : await api('admin.list',{kind:tab});
       state.adminData[tab] = data; renderAdminTab(tab,data); return;
+    }
+    if(tab==='growth' && ['buyer','seller'].includes(state.user.role)) {
+      const data=await api('growth.dashboard');renderGrowthDashboard(data);return;
     }
     if (state.user.role === 'seller') {
       if (tab === 'store') { const data=await api('seller.dashboard'); state.sellerData=data; renderStoreSettings(); return; }
@@ -347,6 +380,85 @@ async function markAllNotificationsRead() {
     notify('All notifications marked as read.');
   } catch(error) { notify(error.message); }
 }
+function renderGrowthDashboard(data) {
+  const referrals=data.referrals||{},conversions=data.conversions||{};
+  const status=data.affiliate_status||'none';
+  const recent=(data.recent||[]).map(r=>`<tr><td>${html(r.full_name)}</td><td>${statusPill(r.status)}</td><td>${formatDate(r.created_at)}</td></tr>`).join('')||tableEmpty('No one has joined from your link yet.',3);
+  const apply=status==='none'||status==='paused'
+    ? '<button class="button button-primary" id="affiliate-apply">Apply to become an ETHAN affiliate</button>'
+    : status==='pending'?'<span class="status-pill pending">Affiliate application pending review</span>':'<span class="status-pill approved">Approved affiliate</span>';
+  $('#dashboard-content').innerHTML=`<div class="dash-panel">
+    <h3>Your personal ETHAN MARKET invite link</h3>
+    <p class="modal-intro">Share this link with customers and business owners. We record new accounts, first purchases and sellers approved through your referral.</p>
+    <div class="growth-link-row"><input aria-label="Your referral link" readonly value="${escAttr(data.referral_url)}"><button class="dash-action primary" data-growth-copy="${escAttr(data.referral_url)}">Copy link</button></div>
+    <div class="metric-grid">
+      ${renderMetric('Sign-ups',referrals.signups||0)}
+      ${renderMetric('First purchases',referrals.first_orders||0)}
+      ${renderMetric('Approved sellers',referrals.approved_sellers||0)}
+      ${renderMetric('Affiliate sales',money(conversions.sales_kobo||0))}
+    </div>
+  </div>
+  <div class="dash-panel"><h3>ETHAN affiliate programme</h3>
+    <p class="modal-intro">Approved affiliates earn a share of ETHAN MARKET's marketplace fee on eligible paid orders they refer. Seller earnings are not reduced by affiliate rewards. Rewards are reviewed and paid manually; there are no automatic transfers.</p>
+    <div class="growth-affiliate-summary">
+      <div>${statusPill(status)}<p class="modal-intro">Commission share: <strong>${(Number(data.affiliate_commission_bps||0)/100).toFixed(1)}%</strong> of ETHAN's marketplace fee</p></div>
+      <div class="dash-actions">${apply}</div>
+    </div>
+    <div class="metric-grid">
+      ${renderMetric('Referred orders',conversions.orders||0)}
+      ${renderMetric('Awaiting review',money(conversions.awaiting_kobo||0))}
+      ${renderMetric('Rewards paid',money(conversions.paid_kobo||0))}
+    </div>
+  </div>
+  <div class="dash-panel"><h3>Referral activity</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>New member</th><th>Milestone</th><th>Joined</th></tr></thead><tbody>${recent}</tbody></table></div></div>`;
+}
+function renderAdminGrowth(data) {
+  const s=data.summary||{};
+  const campaigns=(data.campaigns||[]).map(c=>{
+    const link='https://market.ethandigitalacademy.org/?utm_campaign='+encodeURIComponent(c.slug)+'&utm_source='+encodeURIComponent(c.source||'ethan')+'&utm_medium='+encodeURIComponent(c.medium||'referral');
+    return `<tr><td><strong>${html(c.name)}</strong><br><small>${html(c.slug)}</small></td><td>${html(c.source||'—')} / ${html(c.medium||'—')}</td><td>${c.visits||0}</td><td>${c.signup_visits||0}</td><td>${c.orders||0}</td><td>${money(c.gmv_kobo||0)}</td><td>${statusPill(c.status)}<br><button class="dash-action" data-growth-campaign-status="${c.id}" data-status="${c.status==='active'?'paused':'active'}">${c.status==='active'?'Pause':'Activate'}</button><button class="dash-action" data-growth-copy="${escAttr(link)}">Copy link</button></td></tr>`;
+  }).join('')||tableEmpty('Create your first campaign to start measuring acquisition.',7);
+  const promos=(data.promos||[]).map(p=>`<tr><td><strong>${html(p.code)}</strong></td><td>${(Number(p.discount_bps)/100).toFixed(1)}%</td><td>${p.max_redemptions||'Unlimited'}</td><td>${p.redemptions||0}</td><td>${money(p.discount_spend||0)}</td><td>${statusPill(p.active?'active':'paused')}<br><button class="dash-action" data-growth-promo-status="${p.id}" data-active="${p.active?'false':'true'}">${p.active?'Deactivate':'Activate'}</button></td></tr>`).join('')||tableEmpty('No promo codes created yet.',6);
+  const affiliates=(data.affiliates||[]).map(a=>`<tr><td><strong>${html(a.full_name)}</strong><br><small>${html(a.email)}</small></td><td>${html(a.referral_code)}</td><td>${statusPill(a.affiliate_status)}</td><td>${a.conversions||0}</td><td>${money(a.awaiting_kobo||0)}</td><td><input class="growth-affiliate-rate" type="number" min="0" max="50" step="0.5" aria-label="Marketplace fee share percentage" value="${(Number(a.affiliate_commission_bps||2000)/100).toFixed(1)}" data-affiliate-rate="${a.user_id}"></td><td><div class="dash-actions"><button class="dash-action primary" data-growth-affiliate="${a.user_id}" data-status="approved">Approve / save rate</button><button class="dash-action" data-growth-affiliate="${a.user_id}" data-status="paused">Pause</button></div></td></tr>`).join('')||tableEmpty('No affiliate applications yet.',7);
+  const conversions=(data.conversions||[]).map(x=>`<tr><td>${html(x.affiliate_name)}</td><td>${html(x.order_number)}</td><td>${money(x.sale_kobo)}</td><td>${money(x.commission_kobo)}</td><td>${statusPill(x.status)}</td><td><div class="dash-actions">${x.status==='pending'?'<button class="dash-action primary" data-affiliate-conversion="'+x.id+'" data-status="approved">Approve</button>':''}${x.status==='approved'?'<button class="dash-action primary" data-affiliate-conversion="'+x.id+'" data-status="paid">Mark paid</button>':''}${x.status==='pending'?'<button class="dash-action danger" data-affiliate-conversion="'+x.id+'" data-status="void">Void</button>':''}</div>${x.payout_reference?'<small>'+html(x.payout_reference)+'</small>':''}</td></tr>`).join('')||tableEmpty('No affiliate purchases recorded yet.',6);
+  const referrals=(data.referrals||[]).map(r=>`<tr><td>${html(r.referrer_name)}</td><td>${html(r.referred_name)}<br><small>${html(r.referred_email)}</small></td><td>${html(r.referral_code)}</td><td>${statusPill(r.status)}</td><td>${formatDate(r.created_at)}</td></tr>`).join('')||tableEmpty('No referred accounts yet.',5);
+  $('#dashboard-content').innerHTML=`<div class="metric-grid">
+    ${renderMetric('New accounts · 30 days',s.signups_30d||0)}
+    ${renderMetric('Referred sign-ups',s.referred_signups_30d||0)}
+    ${renderMetric('Referred buyers',s.referred_buyers_30d||0)}
+    ${renderMetric('Approved sellers · 30 days',s.approved_sellers_30d||0)}
+    ${renderMetric('Paid orders · 30 days',s.paid_orders_30d||0)}
+    ${renderMetric('Marketplace GMV · 30 days',money(s.gmv_30d||0))}
+    ${renderMetric('Promo redemptions · 30 days',s.promo_redemptions_30d||0)}
+    ${renderMetric('Pending affiliate rewards',s.affiliate_pending||0)}
+  </div>
+  <div class="dash-panel"><h3>Create an acquisition campaign</h3><p class="modal-intro">Use the generated link in adverts, WhatsApp posts, influencer campaigns and seller recruitment messages. Traffic, sign-up visits and paid orders are measured against the campaign slug.</p>
+    <form class="dash-form" id="growth-campaign-form">
+      <div class="form-field"><label for="growth-campaign-name">Campaign name</label><input id="growth-campaign-name" required maxlength="120" placeholder="Lagos seller launch"></div>
+      <div class="form-field"><label for="growth-campaign-slug">Campaign URL slug</label><input id="growth-campaign-slug" required maxlength="80" placeholder="lagos-seller-launch"></div>
+      <div class="form-field"><label for="growth-campaign-source">Source</label><input id="growth-campaign-source" maxlength="80" placeholder="instagram / whatsapp"></div>
+      <div class="form-field"><label for="growth-campaign-medium">Medium</label><input id="growth-campaign-medium" maxlength="80" placeholder="social / influencer / referral"></div>
+      <div class="form-field"><label for="growth-campaign-budget">Budget (₦)</label><input id="growth-campaign-budget" type="number" min="0" step="100" value="0"></div>
+      <button class="button button-primary" type="submit">Create campaign</button><p class="form-error" id="growth-campaign-error"></p>
+    </form>
+  </div>
+  <div class="dash-panel"><h3>Create a buyer promo code</h3><p class="modal-intro">Promo discounts are capped at ETHAN MARKET's commission on the basket. They do not reduce the seller's recorded earnings.</p>
+    <form class="dash-form" id="growth-promo-form">
+      <div class="form-field"><label for="growth-promo-code">Promo code</label><input id="growth-promo-code" required maxlength="40" placeholder="WELCOME10"></div>
+      <div class="form-field"><label for="growth-promo-discount">Discount (%)</label><input id="growth-promo-discount" type="number" min="0.1" max="100" step="0.1" required value="10"></div>
+      <div class="form-field"><label for="growth-promo-cap">Maximum discount (₦, optional)</label><input id="growth-promo-cap" type="number" min="0" step="100" value="0"></div>
+      <div class="form-field"><label for="growth-promo-minimum">Minimum basket (₦)</label><input id="growth-promo-minimum" type="number" min="0" step="100" value="0"></div>
+      <div class="form-field"><label for="growth-promo-uses">Maximum redemptions (0 = unlimited)</label><input id="growth-promo-uses" type="number" min="0" step="1" value="100"></div>
+      <button class="button button-primary" type="submit">Create promo code</button><p class="form-error" id="growth-promo-error"></p>
+    </form>
+  </div>
+  <div class="dash-panel"><h3>Campaign performance</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Campaign</th><th>Source / medium</th><th>Visits</th><th>Sign-up visits</th><th>Paid orders</th><th>GMV</th><th>Management</th></tr></thead><tbody>${campaigns}</tbody></table></div></div>
+  <div class="dash-panel"><h3>Promo codes</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Code</th><th>Discount</th><th>Max uses</th><th>Redeemed</th><th>Discount spend</th><th>Status</th></tr></thead><tbody>${promos}</tbody></table></div></div>
+  <div class="dash-panel"><h3>Affiliate applications and rates</h3><p class="modal-intro">The rate is a percentage of ETHAN MARKET's commission, not a percentage of seller revenue. Approved rewards are tracked here and paid manually after review.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Affiliate</th><th>Code</th><th>Status</th><th>Orders</th><th>Awaiting reward</th><th>Fee share %</th><th>Actions</th></tr></thead><tbody>${affiliates}</tbody></table></div></div>
+  <div class="dash-panel"><h3>Affiliate conversion ledger</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Affiliate</th><th>Order</th><th>Sales</th><th>Reward</th><th>Status</th><th>Actions</th></tr></thead><tbody>${conversions}</tbody></table></div></div>
+  <div class="dash-panel"><h3>Referral register</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Referrer</th><th>New account</th><th>Code</th><th>Milestone</th><th>Joined</th></tr></thead><tbody>${referrals}</tbody></table></div></div>`;
+}
+
 function renderMetric(label,value) { return `<div class="metric-card"><small>${html(label)}</small><b>${html(value)}</b></div>`; }
 function renderAdminTab(tab,data) {
   const el=$('#dashboard-content');
@@ -363,6 +475,8 @@ function renderAdminTab(tab,data) {
     el.innerHTML=`<div class="dash-panel"><h3>Buyer protection cases</h3><p class="modal-intro">Review both sides before deciding. For buyer refunds, complete the refund with the payment provider first and record its reference.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Buyer</th><th>Seller</th><th>Reason / buyer details</th><th>Seller response</th><th>Status / decision</th></tr></thead><tbody>${(data.disputes||[]).map(d=>`<tr><td><strong>${html(d.order_number)}</strong><br>${html(d.product_name)} × ${d.quantity}</td><td>${html(d.buyer_name)}<br><small>${html(d.buyer_email)}</small></td><td>${html(d.store_name)}<br><small>${html(d.seller_name)}</small></td><td><strong>${html(textStatus(d.reason))}</strong><br><small>${html(d.details)}</small></td><td>${html(d.seller_response||'Awaiting seller response')}</td><td>${statusPill(d.status)}${['open','under_review'].includes(d.status)?`<div class="dash-actions"><button class="dash-action primary" data-dispute-resolve="${d.id}" data-outcome="seller">Release to seller</button><button class="dash-action danger" data-dispute-resolve="${d.id}" data-outcome="buyer">Resolve for buyer / refund</button></div>`: `<small>${html(d.resolution_notes||'')}</small>`}</td></tr>`).join('')||tableEmpty('No buyer disputes have been opened.',6)}</tbody></table></div></div>`;
   } else if(tab==='payouts') {
     el.innerHTML=`<div class="dash-panel"><h3>Seller settlement ledger</h3><p class="modal-intro">Only approve a payout after its protection date has passed and no open dispute exists. Complete the bank transfer, then record its cleared reference.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Seller / order</th><th>Settlement account</th><th>Gross</th><th>Commission</th><th>Net payable</th><th>Protection / status</th><th>Record payout</th></tr></thead><tbody>${(data.payouts||[]).map(p=>{const eligible=!!p.eligible_at&&new Date(p.eligible_at).getTime()<=Date.now();return `<tr><td><strong>${html(p.store_name)}</strong><br><small>${html(p.order_number)} · ${html(p.email)}</small></td><td><strong>${html(p.bank_name||'Bank not supplied')}</strong><br><small>${html(p.account_name||'')} · ${html(p.account_number||'')}</small></td><td>${money(p.gross_kobo)}</td><td>${money(p.commission_kobo)}</td><td>${money(p.net_kobo)}</td><td>${statusPill(p.status)}<br><small>${p.eligible_at?'Eligible: '+formatDate(p.eligible_at):'Awaiting buyer receipt confirmation'}</small><br><small>${html(p.hold_reason||'')}</small>${p.payout_reference?`<br><small>${html(p.payout_reference)}</small>`:''}</td><td><div class="dash-actions">${p.status==='pending'&&eligible?`<button class="dash-action" data-admin-action="payout-status" data-id="${p.id}" data-status="approved">Approve</button>`:''}${p.status==='approved'?`<button class="dash-action primary" data-admin-action="payout-status" data-id="${p.id}" data-status="paid">Mark paid</button>`:''}</div></td></tr>`;}).join('')||tableEmpty('No settlement records yet.',7)}</tbody></table></div></div>`;
+  } else if(tab==='growth') {
+    renderAdminGrowth(data);
   } else if(tab==='settings') {
     const settings=data.settings||{};
     el.innerHTML=`<div class="dash-panel"><h3>Marketplace settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Default seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||1000)/100).toFixed(1)}"></div><div class="form-field"><label for="market-shipping">Default physical delivery fee (₦)</label><input id="market-shipping" type="number" min="0" step="100" value="${Number(settings.physical_shipping_kobo||200000)/100}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form></div><div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Paystack checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add your Paystack secret key to the Vercel project environment to activate initialize, verify and webhook payments. Never put the secret key in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
@@ -400,7 +514,7 @@ function openSellerApplication() {
 }
 async function submitSellerApplication(e) {
   e.preventDefault(); $('#seller-error').textContent='';
-  const payload={store_name:$('#store-name').value,slug:$('#store-slug').value,description:$('#store-description').value,phone:$('#seller-phone').value,whatsapp:$('#seller-whatsapp').value,business_type:$('#business-type').value,city:$('#seller-city').value,state:$('#seller-state').value,bank_name:$('#seller-bank').value,bank_code:$('#seller-bank-code').value,account_number:$('#seller-account').value,account_name:$('#seller-account-name').value};
+  const payload={...growthPayload(),store_name:$('#store-name').value,slug:$('#store-slug').value,description:$('#store-description').value,phone:$('#seller-phone').value,whatsapp:$('#seller-whatsapp').value,business_type:$('#business-type').value,city:$('#seller-city').value,state:$('#seller-state').value,bank_name:$('#seller-bank').value,bank_code:$('#seller-bank-code').value,account_number:$('#seller-account').value,account_name:$('#seller-account-name').value};
   const submit=$('#seller-form button[type=submit]');submit.disabled=true;
   try {const data=await api('seller.apply',payload);state.seller=data.seller;closeModal('seller-modal');notify('Seller application submitted for review.');openDashboard('sell');}
   catch(err){$('#seller-error').textContent=err.message;} finally{submit.disabled=false;}
@@ -448,6 +562,7 @@ async function submitAuth(e){
   const payload={email:$('#auth-email').value.trim(),password:$('#auth-password').value};
   try{
     if(registering){
+      Object.assign(payload,growthPayload());
       payload.full_name=$('#auth-name').value.trim();
       payload.phone=$('#auth-phone').value.trim();
       if (!$('#owner-token-wrap').hidden) payload.owner_token=$('#owner-token').value.trim();
@@ -468,11 +583,24 @@ async function refreshSession(){
   const label=button.querySelector('.action-label');if(label)label.textContent=state.user?(state.user.role==='super_admin'?'Admin':'Account'):'Account';
   startNotificationPolling();
 }
+async function applyCheckoutPromo() {
+  const code=$('#checkout-promo').value.trim().toUpperCase();
+  const feedback=$('#checkout-promo-feedback');
+  if(!code){feedback.textContent='Enter a promo code first.';return;}
+  const button=$('#checkout-apply-promo');button.disabled=true;feedback.textContent='Checking promo code…';
+  try {
+    const result=await api('growth.promo-preview',{code,items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity}))});
+    state.promoPreview=result;
+    $('#checkout-total').textContent=money(result.estimated_total_kobo);
+    feedback.textContent=`${result.code} applied — you save ${money(result.discount_kobo)}.`;
+  } catch(error) { state.promoPreview=null;$('#checkout-total').textContent=money(cartTotal());feedback.textContent=error.message; }
+  finally { button.disabled=false; }
+}
 async function submitCheckout(e){
   e.preventDefault();$('#checkout-error').textContent='';
   if(!state.config.payments_enabled){$('#checkout-error').textContent='Paystack checkout has not been activated yet. Your cart is saved; please try again later.';return;}
   const button=$('#checkout-form button[type=submit]');button.disabled=true;
-  const payload={items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
+  const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
   try{const result=await api('checkout.create',payload);window.location.href=result.authorization_url;}
   catch(err){$('#checkout-error').textContent=err.message;button.disabled=false;}
 }
@@ -573,6 +701,12 @@ document.addEventListener('click',async e=>{
   const dashTab=e.target.closest('[data-dash-tab]');if(dashTab){state.dashboardTab=dashTab.dataset.dashTab;loadDashboardTab();return;}
   const notificationOpen=e.target.closest('[data-notification-open]');if(notificationOpen){openNotificationAction(notificationOpen);return;}
   if(e.target.closest('#notifications-mark-all')){markAllNotificationsRead();return;}
+  const growthCopy=e.target.closest('[data-growth-copy]');if(growthCopy){try{await navigator.clipboard.writeText(growthCopy.dataset.growthCopy);notify('ETHAN MARKET link copied.');}catch{prompt('Copy your ETHAN MARKET link:',growthCopy.dataset.growthCopy);}return;}
+  if(e.target.closest('#affiliate-apply')){try{const r=await api('growth.affiliate-apply');notify(r.status==='pending'?'Affiliate application submitted for review.':'You are already approved.');loadDashboardTab();}catch(error){notify(error.message);}return;}
+  const campaignStatus=e.target.closest('[data-growth-campaign-status]');if(campaignStatus){try{await api('admin.growth-campaign-status',{id:campaignStatus.dataset.growthCampaignStatus,status:campaignStatus.dataset.status});notify('Campaign updated.');loadDashboardTab();}catch(error){notify(error.message);}return;}
+  const promoStatus=e.target.closest('[data-growth-promo-status]');if(promoStatus){try{await api('admin.growth-promo-status',{id:promoStatus.dataset.growthPromoStatus,active:promoStatus.dataset.active==='true'});notify('Promo code updated.');loadDashboardTab();}catch(error){notify(error.message);}return;}
+  const affiliate=e.target.closest('[data-growth-affiliate]');if(affiliate){const rate=$('[data-affiliate-rate="'+affiliate.dataset.growthAffiliate+'"]');const bps=affiliate.dataset.status==='approved'?Math.round(Number(rate?.value||0)*100):0;if(affiliate.dataset.status==='approved'&&bps<1){notify('Set a marketplace-fee share above zero before approving.');return;}try{await api('admin.affiliate-status',{user_id:affiliate.dataset.growthAffiliate,status:affiliate.dataset.status,commission_share_bps:bps});notify('Affiliate status updated.');loadDashboardTab();}catch(error){notify(error.message);}return;}
+  const affiliateConversion=e.target.closest('[data-affiliate-conversion]');if(affiliateConversion){let payout_reference='';if(affiliateConversion.dataset.status==='paid'){payout_reference=prompt('Enter the cleared bank transfer reference for this affiliate reward:')||'';if(!payout_reference.trim()){notify('A payout reference is required.');return;}}try{await api('admin.affiliate-conversion',{id:affiliateConversion.dataset.affiliateConversion,status:affiliateConversion.dataset.status,payout_reference});notify('Affiliate conversion updated.');loadDashboardTab();}catch(error){notify(error.message);}return;}
   const action=e.target.closest('[data-admin-action]');if(action){adminAction(action);return;}
   const fulfill=e.target.closest('[data-fulfill]');if(fulfill){sellerFulfillAction(fulfill);return;}
   const adminConfirmDelivery=e.target.closest('[data-admin-confirm-delivery]');if(adminConfirmDelivery){adminConfirmDeliveryAction(adminConfirmDelivery);return;}
@@ -606,7 +740,18 @@ $('#product-form').addEventListener('submit',submitProduct);
 $('#product-type').addEventListener('change',updateProductType);
 $('#product-image-file').addEventListener('change', uploadProductImage);
 $('#checkout-form').addEventListener('submit',submitCheckout);
+$('#checkout-apply-promo').addEventListener('click',applyCheckoutPromo);
 $('#dashboard-content').addEventListener('submit',async e=>{
+  if(e.target.id==='growth-campaign-form'){
+    e.preventDefault();$('#growth-campaign-error').textContent='';
+    try{await api('admin.growth-campaign-save',{name:$('#growth-campaign-name').value,slug:$('#growth-campaign-slug').value,source:$('#growth-campaign-source').value,medium:$('#growth-campaign-medium').value,budget_kobo:nairaToKobo($('#growth-campaign-budget').value)});notify('Campaign created. Open Growth to copy its tracking link.');loadDashboardTab();}
+    catch(error){$('#growth-campaign-error').textContent=error.message;}
+  }
+  if(e.target.id==='growth-promo-form'){
+    e.preventDefault();$('#growth-promo-error').textContent='';
+    try{await api('admin.growth-promo-save',{code:$('#growth-promo-code').value,discount_bps:Math.round(Number($('#growth-promo-discount').value)*100),max_discount_kobo:nairaToKobo($('#growth-promo-cap').value),min_subtotal_kobo:nairaToKobo($('#growth-promo-minimum').value),max_redemptions:Number($('#growth-promo-uses').value)||null});notify('Promo code created.');loadDashboardTab();}
+    catch(error){$('#growth-promo-error').textContent=error.message;}
+  }
   if(e.target.id==='store-settings-form'){
     e.preventDefault();$('#store-settings-error').textContent='';
     try{const data=await api('seller.profile',{description:$('#profile-description').value,phone:$('#profile-phone').value,whatsapp:$('#profile-whatsapp').value,city:$('#profile-city').value,state:$('#profile-state').value,bank_name:$('#profile-bank').value,bank_code:$('#profile-bank-code').value,account_number:$('#profile-account').value,account_name:$('#profile-account-name').value});state.seller=data.seller;notify('Store profile saved.');}
@@ -626,6 +771,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCart();$('.mod
 $('#year').textContent=new Date().getFullYear();
 
 async function start() {
+  captureGrowthAttribution();
+  trackGrowthEvent('page_view');
   // Open registration immediately. Do not make visitors wait for catalogue
   // or database requests before they can see the account form.
   const params = new URLSearchParams(location.search);
@@ -633,7 +780,7 @@ async function start() {
     location.pathname === '/register' ||
     location.pathname === '/register/' ||
     params.get('auth') === 'register';
-  if (directRegistration) openAuth('register');
+  if (directRegistration) { openAuth('register'); trackGrowthEvent('signup_view'); }
 
   await initPublicData();
   await hydrateCart();
