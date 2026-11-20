@@ -12,6 +12,24 @@
   },
   "headers": [
     {
+      "source": "/api/seo-page",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300, s-maxage=900, stale-while-revalidate=3600"
+        }
+      ]
+    },
+    {
+      "source": "/api/seo-sitemap",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=1800, s-maxage=3600"
+        }
+      ]
+    },
+    {
       "source": "/account.html",
       "headers": [
         {
@@ -114,6 +132,22 @@
     }
   ],
   "rewrites": [
+    {
+      "source": "/product/:slug/:id",
+      "destination": "/api/seo-page?type=product&id=:id"
+    },
+    {
+      "source": "/store/:slug",
+      "destination": "/api/seo-page?type=store&slug=:slug"
+    },
+    {
+      "source": "/sitemap-products.xml",
+      "destination": "/api/seo-sitemap?type=products"
+    },
+    {
+      "source": "/sitemap-stores.xml",
+      "destination": "/api/seo-sitemap?type=stores"
+    },
     {
       "source": "/account",
       "destination": "/account.html"
