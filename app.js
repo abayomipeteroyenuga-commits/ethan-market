@@ -41,14 +41,24 @@ function closeModal(id) { const modal = $('#' + id); if (!modal) return; modal.h
 function openAuth(mode = 'login', message = '') {
   setAuthMode(mode); $('#auth-error').textContent = message; showModal('auth-modal');
 }
+function updateOwnerTokenVisibility() {
+  const isOwner = $('#auth-email').value.trim().toLowerCase() === 'abayomipeteroyenuga@gmail.com';
+  const visible = state.authMode === 'register' && isOwner;
+  $('#owner-token-wrap').hidden = !visible;
+  $('#owner-token').required = visible;
+}
 function setAuthMode(mode) {
   state.authMode = mode;
-  $$('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.authMode === mode));
-  $('#auth-name-wrap').hidden = mode !== 'register';
-  $('#auth-phone-wrap').hidden = mode !== 'register';
-  $('#owner-token-wrap').hidden = mode !== 'register' || $('#auth-email').value.trim().toLowerCase() !== 'abayomipeteroyenuga@gmail.com';
+  $('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.authMode === mode));
+  const registering = mode === 'register';
+  $('#auth-name-wrap').hidden = !registering;
+  $('#auth-name').required = registering;
+  $('#auth-phone-wrap').hidden = !registering;
+  $('#auth-password-confirm-wrap').hidden = !registering;
+  $('#auth-password-confirm').required = registering;
+  updateOwnerTokenVisibility();
   $('#auth-title').textContent = mode === 'login' ? 'Good to see you.' : 'Create your account.';
-  $('#auth-intro').textContent = mode === 'login' ? 'Sign in to manage your orders, wishlist and store.' : 'Join ETHAN MARKET and start discovering more.';
+  $('#auth-intro').textContent = mode === 'login' ? 'Sign in to manage your orders, wishlist and store.' : 'Create one account to shop, save items and apply to open a store.';
   $('#auth-submit').innerHTML = mode === 'login' ? 'Sign in <span>→</span>' : 'Create account <span>→</span>';
   $('#auth-password').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   $('#auth-error').textContent = '';
@@ -338,13 +348,31 @@ async function submitProduct(e){
   catch(err){$('#product-error').textContent=err.message;}finally{button.disabled=false;}
 }
 async function submitAuth(e){
-  e.preventDefault();$('#auth-error').textContent='';const button=$('#auth-submit');button.disabled=true;
-  const payload={email:$('#auth-email').value,password:$('#auth-password').value};
+  e.preventDefault();
+  $('#auth-error').textContent='';
+  const registering = state.authMode === 'register';
+  if (registering && $('#auth-password').value !== $('#auth-password-confirm').value) {
+    $('#auth-error').textContent = 'Your passwords do not match. Please check and try again.';
+    $('#auth-password-confirm').focus();
+    return;
+  }
+  const button=$('#auth-submit');
+  button.disabled=true;
+  const payload={email:$('#auth-email').value.trim(),password:$('#auth-password').value};
   try{
-    if(state.authMode==='register'){payload.full_name=$('#auth-name').value;payload.phone=$('#auth-phone').value;payload.owner_token=$('#owner-token').value;}
-    const data=await api(state.authMode==='login'?'auth.login':'auth.register',payload);
-    state.user=data.user;await refreshSession();closeModal('auth-modal');notify(state.authMode==='login'?'Welcome back.':'Your Ethan Market account is ready.');
-    if(state.user.role==='super_admin'||state.user.role==='admin')openDashboard('overview');else if(state.user.role==='seller')openDashboard('overview');await verifyPaymentFromUrl();
+    if(registering){
+      payload.full_name=$('#auth-name').value.trim();
+      payload.phone=$('#auth-phone').value.trim();
+      if (!$('#owner-token-wrap').hidden) payload.owner_token=$('#owner-token').value.trim();
+    }
+    const data=await api(registering?'auth.register':'auth.login',payload);
+    state.user=data.user;
+    await refreshSession();
+    closeModal('auth-modal');
+    notify(registering?'Your ETHAN MARKET account is ready.':'Welcome back.');
+    if(state.user.role==='super_admin'||state.user.role==='admin')openDashboard('overview');
+    else if(state.user.role==='seller')openDashboard('overview');
+    await verifyPaymentFromUrl();
   }catch(err){$('#auth-error').textContent=err.message;}finally{button.disabled=false;}
 }
 async function refreshSession(){
@@ -420,7 +448,7 @@ $('#search-input').addEventListener('input',e=>{if(!e.target.value){state.query=
 $('#filter-chips').addEventListener('click',e=>{const btn=e.target.closest('[data-filter]');if(btn)setFilter(btn.dataset.filter);});
 $('#sort-select').addEventListener('change',e=>{state.sort=e.target.value;loadProducts();});
 $('#auth-form').addEventListener('submit',submitAuth);
-$('#auth-email').addEventListener('input',()=>{$('#owner-token-wrap').hidden=state.authMode!=='register'||$('#auth-email').value.trim().toLowerCase()!=='abayomipeteroyenuga@gmail.com';});
+$('#auth-email').addEventListener('input',updateOwnerTokenVisibility);
 $('#seller-form').addEventListener('submit',submitSellerApplication);
 $('#product-form').addEventListener('submit',submitProduct);
 $('#product-type').addEventListener('change',updateProductType);
