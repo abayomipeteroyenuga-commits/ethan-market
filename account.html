@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en-NG">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#122b4a">
+  <meta name="description" content="Sign in or create your ETHAN MARKET account.">
+  <title>Account | ETHAN MARKET</title>
+  <link rel="icon" href="/assets/favicon.png" type="image/png">
+  <style>
+    :root{--navy:#122b4a;--blue:#214d7b;--gold:#ba9147;--ink:#172b40;--muted:#718092;--line:#e3e8ee;--paper:#f5f7fa}
+    *{box-sizing:border-box}
+    [hidden]{display:none!important}
+    body{margin:0;min-height:100vh;background:linear-gradient(135deg,#f4f7fb 0%,#eef2f7 54%,#f7f5ef 100%);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);display:flex;flex-direction:column}
+    header{height:76px;padding:0 clamp(18px,5vw,72px);display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid #e9edf2}
+    .brand img{width:160px;height:auto;display:block;object-fit:contain}
+    .back{font-size:13px;font-weight:700;color:var(--navy);text-decoration:none;padding:10px 15px;border:1px solid var(--line);border-radius:9px;background:#fff}
+    .back:hover{border-color:var(--gold);color:var(--blue)}
+    main{width:100%;max-width:560px;margin:auto;padding:42px 18px 52px}
+    .eyebrow{color:var(--gold);font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}
+    h1{font-size:clamp(27px,5vw,36px);letter-spacing:-.045em;color:var(--navy);margin:9px 0 8px}
+    .lead{font-size:14px;line-height:1.65;color:var(--muted);margin:0 0 23px}
+    .panel{background:#fff;border:1px solid #e6ebf0;border-radius:18px;padding:clamp(22px,5vw,34px);box-shadow:0 20px 65px rgba(18,43,74,.09)}
+    .tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#f0f3f7;padding:5px;border-radius:11px;margin-bottom:23px}
+    .tab{border:0;background:transparent;border-radius:8px;padding:12px 10px;color:#667588;font-weight:750;font-size:13px;cursor:pointer}
+    .tab[aria-selected=true]{background:#fff;color:var(--navy);box-shadow:0 2px 9px rgba(20,40,60,.09)}
+    .form-title{font-size:21px;letter-spacing:-.03em;color:var(--navy);margin:0 0 5px}
+    .form-copy{font-size:12px;color:var(--muted);line-height:1.6;margin:0 0 20px}
+    .fields{display:grid;gap:14px}
+    .field{display:grid;gap:7px}
+    label{font-size:12px;font-weight:750;color:#34475b}
+    input{width:100%;height:47px;border:1px solid #dce3ea;border-radius:9px;padding:0 13px;font:inherit;font-size:14px;color:var(--ink);background:#fff;outline:none}
+    input:focus{border-color:#b99655;box-shadow:0 0 0 3px rgba(185,150,85,.14)}
+    input::placeholder{color:#a4afba}
+    .hint{font-size:10px;line-height:1.5;color:#8995a2}
+    .primary{width:100%;height:49px;border:0;border-radius:9px;background:var(--navy);color:#fff;font-weight:800;font-size:13px;cursor:pointer;margin-top:4px;box-shadow:0 7px 17px rgba(18,43,74,.15)}
+    .primary:hover{background:var(--blue)}
+    .primary:disabled{opacity:.55;cursor:wait}
+    .error{color:#ad3737;background:#fff5f5;border:1px solid #f3dada;border-radius:8px;padding:10px 12px;font-size:11px;line-height:1.5;margin:0}
+    .success{color:#17613d;background:#f1faf5;border:1px solid #d4edde;border-radius:8px;padding:10px 12px;font-size:11px;line-height:1.5;margin:0}
+    .foot{font-size:10px;color:#8995a2;line-height:1.6;text-align:center;margin:20px 0 0}
+    .switchline{text-align:center;color:var(--muted);font-size:12px;margin:19px 0 0}
+    .switchline button{border:0;background:none;color:var(--blue);font-weight:800;cursor:pointer;padding:3px}
+    .owner{padding:13px;border:1px dashed #c8b17e;border-radius:10px;background:#fdfbf6}
+    footer{text-align:center;color:#8a96a3;font-size:10px;padding:0 18px 25px}
+    @media(max-width:480px){header{height:66px;padding:0 15px}.brand img{width:137px}.back{font-size:11px;padding:9px 11px}main{padding-top:28px}}
+  </style>
+  <script src="/account.js?v=20261120-account-v1" defer></script>
+</head>
+<body>
+  <header>
+    <a class="brand" href="/" aria-label="ETHAN MARKET home"><img src="/assets/ethan-market-logo.png" alt="ETHAN MARKET"></a>
+    <a class="back" href="/">← Back to marketplace</a>
+  </header>
+  <main>
+    <div class="eyebrow">Your ETHAN MARKET account</div>
+    <h1>Welcome to the market.</h1>
+    <p class="lead">Sign in to continue shopping, or create an account to save products and access your marketplace workspace.</p>
+    <section class="panel" aria-label="Account access">
+      <div class="tabs" role="tablist" aria-label="Choose account action">
+        <button class="tab" id="login-tab" type="button" role="tab" aria-controls="login-panel" aria-selected="true" data-mode="login">Sign in</button>
+        <button class="tab" id="register-tab" type="button" role="tab" aria-controls="register-panel" aria-selected="false" data-mode="register">Create account</button>
+      </div>
+
+      <section id="login-panel" role="tabpanel" aria-labelledby="login-tab">
+        <h2 class="form-title">Sign in to your account</h2>
+        <p class="form-copy">Enter the email address and password connected to your ETHAN MARKET account.</p>
+        <form id="login-form" class="fields" novalidate>
+          <div class="field"><label for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="128" placeholder="Your password"></div>
+          <p id="login-error" class="error" role="alert" hidden></p>
+          <p id="login-success" class="success" role="status" hidden></p>
+          <button class="primary" id="login-submit" type="submit">Sign in securely</button>
+        </form>
+        <p class="switchline">New to ETHAN MARKET? <button type="button" data-mode="register">Create an account</button></p>
+      </section>
+
+      <section id="register-panel" role="tabpanel" aria-labelledby="register-tab" hidden>
+        <h2 class="form-title">Create your account</h2>
+        <p class="form-copy">One account lets you shop, save products and apply to become a seller.</p>
+        <form id="register-form" class="fields" novalidate>
+          <div class="field"><label for="register-name">Full name</label><input id="register-name" name="full_name" autocomplete="name" required minlength="2" maxlength="120" placeholder="Enter your full name"></div>
+          <div class="field"><label for="register-phone">Phone number <span class="hint">(optional)</span></label><input id="register-phone" name="phone" type="tel" autocomplete="tel" maxlength="40" placeholder="080…"></div>
+          <div class="field"><label for="register-email">Email address</label><input id="register-email" name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label for="register-password">Create password</label><input id="register-password" name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="128" placeholder="At least 10 characters"><span class="hint">Use at least 10 characters.</span></div>
+          <div class="field"><label for="register-confirm">Confirm password</label><input id="register-confirm" name="password_confirm" type="password" autocomplete="new-password" required minlength="10" maxlength="128" placeholder="Enter the same password again"></div>
+          <div class="owner field" id="owner-token-wrap" hidden>
+            <label for="owner-token">One-time owner setup code</label>
+            <input id="owner-token" name="owner_token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <span class="hint">Only required for the first Super Admin account using the owner's email. Buyers and sellers do not need this code.</span>
+          </div>
+          <p id="register-error" class="error" role="alert" hidden></p>
+          <p id="register-success" class="success" role="status" hidden></p>
+          <button class="primary" id="register-submit" type="submit">Create my account</button>
+        </form>
+        <p class="switchline">Already have an account? <button type="button" data-mode="login">Sign in</button></p>
+      </section>
+      <p class="foot">Your password is protected. Never share your password or one-time owner setup code with anyone.</p>
+    </section>
+  </main>
+  <footer>© <span id="year"></span> ETHAN MARKET · Powered by Ethan Digital Academy</footer>
+</body>
+</html>
