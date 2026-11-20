@@ -15,8 +15,8 @@ document.addEventListener('click',event=>{
       existing.quantity=Math.min(max,Number(existing.quantity||0)+1);
     }else rows.push({product_id:id,quantity:1});
     localStorage.setItem('ethan-market-cart-v1',JSON.stringify(rows));
-    button.textContent='Added — open shopping bag';
-    button.addEventListener('click',()=>{window.location.href='/#shop';},{once:true});
+    button.textContent='Added — opening shopping bag…';
+    window.location.assign('/#shop');
   }catch{
     button.textContent='Please open the marketplace to add this item';
   }
