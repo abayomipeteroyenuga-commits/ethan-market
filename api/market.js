@@ -157,6 +157,21 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_disputes_status_idx ON market_disputes(status,opened_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_disputes_seller_idx ON market_disputes(seller_id,status,opened_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_notifications (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text NOT NULL,
+    target_tab text NOT NULL DEFAULT 'orders',
+    dedupe_key text NOT NULL DEFAULT '',
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    read_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_notifications_user_idx ON market_notifications(user_id,created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS market_notifications_unread_idx ON market_notifications(user_id,created_at DESC) WHERE read_at IS NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_notifications_dedupe_uq ON market_notifications(user_id,dedupe_key) WHERE dedupe_key <> ''`,
   `CREATE TABLE IF NOT EXISTS market_wishlists (
     user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
     product_id uuid NOT NULL REFERENCES market_products(id) ON DELETE CASCADE,
@@ -202,7 +217,7 @@ async function ensureSchema() {
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
-      'market_audit_logs','market_rate_limits'
+      'market_audit_logs','market_rate_limits','market_notifications'
     ];
     const countTables = async (executor) => {
       const result = await executor.query(
@@ -516,6 +531,44 @@ async function applySeller(db, req, body) {
   } catch(e) { if(e.code==='23505') throw new HttpError(409,'That store address is already in use.'); throw e; }
 }
 
+async function createNotification(db, userId, fields = {}) {
+  if (!userId) return;
+  const type=text(fields.type,60)||'market_update';
+  const title=text(fields.title,140)||'ETHAN MARKET update';
+  const message=text(fields.message,500);
+  const targetTab=['orders','products','disputes','payouts','overview'].includes(fields.target_tab)?fields.target_tab:'orders';
+  const dedupeKey=text(fields.dedupe_key,180);
+  const metadata=fields.metadata&&typeof fields.metadata==='object'?fields.metadata:{};
+  await db.query(
+    `INSERT INTO market_notifications(user_id,type,title,message,target_tab,dedupe_key,metadata)
+     VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)
+     ON CONFLICT (user_id,dedupe_key) WHERE dedupe_key <> '' DO NOTHING`,
+    [userId,type,title,message,targetTab,dedupeKey,JSON.stringify(metadata)]
+  );
+}
+
+async function notificationsList(db, req) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  const [items,unread]=await Promise.all([
+    db.query(`SELECT id,type,title,message,target_tab,metadata,read_at,created_at
+      FROM market_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,[user.id]),
+    db.query('SELECT count(*)::int AS count FROM market_notifications WHERE user_id=$1 AND read_at IS NULL',[user.id])
+  ]);
+  return {notifications:items.rows,unread_count:Number(unread.rows[0]?.count||0)};
+}
+
+async function notificationsMarkRead(db, req, body) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  if(body.all===true) {
+    const result=await db.query('UPDATE market_notifications SET read_at=now() WHERE user_id=$1 AND read_at IS NULL',[user.id]);
+    return {ok:true,updated:result.rowCount||0};
+  }
+  const id=text(body.id,80);
+  if(!id) throw new HttpError(400,'Choose a notification to mark as read.');
+  const result=await db.query('UPDATE market_notifications SET read_at=now() WHERE id=$1 AND user_id=$2 AND read_at IS NULL',[id,user.id]);
+  return {ok:true,updated:result.rowCount||0};
+}
+
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
@@ -719,6 +772,20 @@ async function finalizePaid(db, transaction) {
          FROM market_order_items WHERE order_id=$1
          ON CONFLICT(order_item_id) DO NOTHING`,[order.id,holdDays]
       );
+      await createNotification(client,order.buyer_id,{
+        type:'order_paid',title:'Payment confirmed',
+        message:`Your payment for order ${order.order_number} was confirmed. Your purchases are now available in your order history.`,
+        target_tab:'orders',dedupe_key:`buyer-order-paid:${order.id}`,metadata:{order_id:order.id,order_number:order.order_number}
+      });
+      const {rows:orderedItems}=await client.query(
+        `SELECT oi.id,oi.product_name,oi.quantity,s.user_id AS seller_user_id,s.store_name
+         FROM market_order_items oi JOIN market_sellers s ON s.id=oi.seller_id WHERE oi.order_id=$1`,[order.id]
+      );
+      for(const item of orderedItems) await createNotification(client,item.seller_user_id,{
+        type:'new_order',title:'New paid order received',
+        message:`You have a new paid order: ${item.product_name} × ${item.quantity}. Open your orders and prepare fulfilment.`,
+        target_tab:'orders',dedupe_key:`seller-new-order:${item.id}`,metadata:{order_id:order.id,order_item_id:item.id,order_number:order.order_number,store_name:item.store_name}
+      });
     }
     orderInfo={id:order.id,order_number:order.order_number,total_kobo:Number(order.total_kobo),payment_status:'paid'};
     await client.query('COMMIT');
@@ -851,6 +918,18 @@ async function sellerFulfill(db,req,body) {
       WHEN EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status='dispatched') THEN 'partially_dispatched'
       ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[rows[0].order_id]
   );
+  const buyer=await db.query(
+    `SELECT o.buyer_id,o.order_number,oi.product_name FROM market_orders o
+     JOIN market_order_items oi ON oi.order_id=o.id WHERE oi.id=$1`,[itemId]
+  );
+  if(buyer.rows[0]) await createNotification(db,buyer.rows[0].buyer_id,{
+    type:status==='dispatched'?'order_dispatched':'order_processing',
+    title:status==='dispatched'?'Your order has been dispatched':'Your order is being prepared',
+    message:status==='dispatched'
+      ? `${buyer.rows[0].product_name} from order ${buyer.rows[0].order_number} has been dispatched.${text(body.tracking_number,100)?' Tracking: '+text(body.tracking_carrier,100)+' '+text(body.tracking_number,100):''}`
+      : `${buyer.rows[0].product_name} from order ${buyer.rows[0].order_number} is now being prepared by the seller.`,
+    target_tab:'orders',dedupe_key:`buyer-${status}:${itemId}`,metadata:{order_item_id:itemId,order_number:buyer.rows[0].order_number}
+  });
   await audit(db,user.id,'ORDER_ITEM_FULFILMENT_UPDATED','order_item',itemId,{status});
   return {ok:true};
 }
@@ -897,6 +976,15 @@ async function buyerConfirmDelivery(db,req,body) {
        ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[item.order_id]
     );
     await client.query('COMMIT');
+    const sellerOwner=await db.query(
+      `SELECT s.user_id,oi.product_name,o.order_number FROM market_order_items oi
+       JOIN market_sellers s ON s.id=oi.seller_id JOIN market_orders o ON o.id=oi.order_id WHERE oi.id=$1`,[itemId]
+    );
+    if(sellerOwner.rows[0]) await createNotification(db,sellerOwner.rows[0].user_id,{
+      type:'buyer_confirmed_delivery',title:'Buyer confirmed receipt',
+      message:`The buyer confirmed receipt of ${sellerOwner.rows[0].product_name} in order ${sellerOwner.rows[0].order_number}. The protection period is now active.`,
+      target_tab:'orders',dedupe_key:`seller-buyer-confirmed:${itemId}`,metadata:{order_item_id:itemId,order_number:sellerOwner.rows[0].order_number}
+    });
     await audit(db,user.id,'BUYER_CONFIRMED_DELIVERY','order_item',itemId,{protection_hold_days:holdDays});
     return {ok:true,eligible_in_days:holdDays};
   } catch(error) { await client.query('ROLLBACK'); throw error; }
@@ -933,6 +1021,12 @@ async function buyerOpenDispute(db,req,body) {
       "UPDATE market_payouts SET status=CASE WHEN status='paid' THEN 'paid' ELSE 'held' END,hold_reason='Buyer dispute open — payout release blocked' WHERE order_item_id=$1 AND status<>'reversed'",
       [itemId]
     );
+    const sellerOwner=await client.query('SELECT user_id FROM market_sellers WHERE id=$1',[item.seller_id]);
+    if(sellerOwner.rows[0]) await createNotification(client,sellerOwner.rows[0].user_id,{
+      type:'buyer_dispute',title:'A buyer reported an order problem',
+      message:`A buyer opened a case for order ${item.order_id} (item ${itemId}). Your unpaid settlement is on hold while the case is reviewed.`,
+      target_tab:'disputes',dedupe_key:`seller-dispute-opened:${created.rows[0].id}`,metadata:{dispute_id:created.rows[0].id,order_id:item.order_id,order_item_id:itemId}
+    });
     await client.query('COMMIT');
     await audit(db,user.id,'BUYER_OPENED_DISPUTE','dispute',created.rows[0].id,{reason});
     return {dispute_id:created.rows[0].id,status:'open'};
@@ -951,6 +1045,15 @@ async function sellerRespondDispute(db,req,body) {
     [id,seller.id,response]
   );
   if(!rows.length) throw new HttpError(404,'Open dispute not found for this store.');
+  const dispute=await db.query(
+    `SELECT d.buyer_id,o.order_number,oi.product_name FROM market_disputes d
+     JOIN market_orders o ON o.id=d.order_id JOIN market_order_items oi ON oi.id=d.order_item_id WHERE d.id=$1`,[id]
+  );
+  if(dispute.rows[0]) await createNotification(db,dispute.rows[0].buyer_id,{
+    type:'seller_dispute_response',title:'The seller responded to your case',
+    message:`The seller has responded to your report about ${dispute.rows[0].product_name} in order ${dispute.rows[0].order_number}. Marketplace administration will review the case.`,
+    target_tab:'orders',dedupe_key:`buyer-dispute-response:${id}`,metadata:{dispute_id:id,order_number:dispute.rows[0].order_number}
+  });
   await audit(db,user.id,'SELLER_RESPONDED_TO_DISPUTE','dispute',id);
   return {ok:true,status:'under_review'};
 }
@@ -963,7 +1066,7 @@ async function adminConfirmDelivery(db,req,body) {
   try {
     await client.query('BEGIN');
     const {rows}=await client.query(
-      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,o.payment_status
+      `SELECT oi.id,oi.order_id,oi.product_type,oi.fulfillment_status,oi.product_name,o.payment_status,o.buyer_id,o.order_number
        FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
        WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
     );
@@ -990,6 +1093,11 @@ async function adminConfirmDelivery(db,req,body) {
        WHEN EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status='dispatched') THEN 'partially_dispatched'
        ELSE 'processing' END,updated_at=now() WHERE o.id=$1`,[item.order_id]
     );
+    await createNotification(client,item.buyer_id,{
+      type:'delivery_verified',title:'Delivery evidence verified',
+      message:`ETHAN MARKET administration verified delivery for ${item.product_name} in order ${item.order_number}. You can contact support or open a case if you believe this is incorrect.`,
+      target_tab:'orders',dedupe_key:`buyer-admin-delivery-verified:${itemId}`,metadata:{order_item_id:itemId,order_number:item.order_number}
+    });
     await client.query('COMMIT');
     await audit(db,user.id,'ADMIN_CONFIRMED_DELIVERY','order_item',itemId,{evidence,protection_hold_days:holdDays});
     return {ok:true,eligible_in_days:holdDays};
@@ -1006,7 +1114,13 @@ async function adminResolveDispute(db,req,body) {
   const client=await db.connect();
   try {
     await client.query('BEGIN');
-    const {rows}=await client.query("SELECT id,order_item_id FROM market_disputes WHERE id=$1 AND status IN ('open','under_review') FOR UPDATE",[id]);
+    const {rows}=await client.query(
+      `SELECT d.id,d.order_item_id,d.buyer_id,d.seller_id,d.order_id,o.order_number,oi.product_name,su.id AS seller_user_id
+       FROM market_disputes d JOIN market_orders o ON o.id=d.order_id
+       JOIN market_order_items oi ON oi.id=d.order_item_id
+       JOIN market_sellers s ON s.id=d.seller_id JOIN market_users su ON su.id=s.user_id
+       WHERE d.id=$1 AND d.status IN ('open','under_review') FOR UPDATE OF d`,[id]
+    );
     if(!rows.length) throw new HttpError(404,'Open dispute not found.');
     const status=outcome==='seller'?'resolved_seller':'resolved_buyer';
     await client.query(
@@ -1024,6 +1138,17 @@ async function adminResolveDispute(db,req,body) {
         [rows[0].order_item_id]
       );
     }
+    const resolutionText=outcome==='seller'
+      ? `The case for ${rows[0].product_name} in order ${rows[0].order_number} was resolved in the seller's favour. Seller settlement is eligible for administrator approval.`
+      : `The case for ${rows[0].product_name} in order ${rows[0].order_number} was resolved in your favour. The refund reference has been recorded.`;
+    await createNotification(client,rows[0].buyer_id,{
+      type:'dispute_resolved',title:'Your buyer protection case was resolved',
+      message:resolutionText,target_tab:'orders',dedupe_key:`buyer-dispute-resolved:${id}`,metadata:{dispute_id:id,outcome}
+    });
+    await createNotification(client,rows[0].seller_user_id,{
+      type:'dispute_resolved',title:'Buyer protection case resolved',
+      message:resolutionText,target_tab:'disputes',dedupe_key:`seller-dispute-resolved:${id}`,metadata:{dispute_id:id,outcome}
+    });
     await client.query('COMMIT');
     await audit(db,user.id,'DISPUTE_RESOLVED','dispute',id,{outcome,refund_reference:outcome==='buyer'?reference:''});
     return {ok:true,status};
@@ -1088,13 +1213,24 @@ async function adminAction(db,req,body) {
     if(!rows.length) throw new HttpError(404,'Seller not found.');
     if(status==='approved') await db.query("UPDATE market_users SET role='seller',updated_at=now() WHERE id=$1 AND role='buyer'",[rows[0].user_id]);
     if(status==='suspended') await db.query("UPDATE market_users SET role='buyer',updated_at=now() WHERE id=$1 AND role='seller'",[rows[0].user_id]);
+    await createNotification(db,rows[0].user_id,{
+      type:'seller_application_status',title:status==='approved'?'Your seller application was approved':'Your seller application was updated',
+      message:status==='approved'?`Your store ${rows[0].store_name} has been approved. You can now list products and manage orders.`:`Your store ${rows[0].store_name} status is now ${status}. Please sign in to review your seller account.`,
+      target_tab:'overview',dedupe_key:`seller-status-${status}:${id}`,metadata:{seller_id:id,status}
+    });
     await audit(db,user.id,'SELLER_STATUS_CHANGED','seller',id,{status}); return {ok:true};
   }
   if(action==='admin.product-status') {
     const status=['active','rejected','archived'].includes(body.status)?body.status:null;
     if(!status) throw new HttpError(400,'Invalid product status.');
-    const {rows}=await db.query('UPDATE market_products SET status=$2,featured=$3,updated_at=now() WHERE id=$1 RETURNING id',[id,status,status==='active'&&body.featured===true]);
+    const {rows}=await db.query('UPDATE market_products SET status=$2,featured=$3,updated_at=now() WHERE id=$1 RETURNING id,seller_id,name',[id,status,status==='active'&&body.featured===true]);
     if(!rows.length) throw new HttpError(404,'Product not found.');
+    const owner=await db.query('SELECT user_id FROM market_sellers WHERE id=$1',[rows[0].seller_id]);
+    if(owner.rows[0]) await createNotification(db,owner.rows[0].user_id,{
+      type:'product_review_status',title:status==='active'?'Your product is now live':'Your product listing was reviewed',
+      message:`"${rows[0].name}" is now marked ${status} by ETHAN MARKET administration.`,
+      target_tab:'products',dedupe_key:`product-review-${status}:${id}`,metadata:{product_id:id,status}
+    });
     await audit(db,user.id,'PRODUCT_STATUS_CHANGED','product',id,{status}); return {ok:true};
   }
   if(action==='admin.payout-status') {
@@ -1120,6 +1256,19 @@ async function adminAction(db,req,body) {
       ); rows=result.rows;
     }
     if(!rows.length) throw new HttpError(409,'Payout cannot be changed. Check its protection period, dispute status and current payout state.');
+    const payoutOwner=await db.query(
+      `SELECT s.user_id,o.order_number,p.net_kobo,s.store_name FROM market_payouts p
+       JOIN market_sellers s ON s.id=p.seller_id JOIN market_orders o ON o.id=p.order_id WHERE p.id=$1`,[id]
+    );
+    if(payoutOwner.rows[0]) await createNotification(db,payoutOwner.rows[0].user_id,{
+      type:'payout_status',title:status==='paid'?'Seller payout recorded':status==='approved'?'Seller payout approved':'Seller payout placed on hold',
+      message:status==='paid'
+        ? `Your payout for order ${payoutOwner.rows[0].order_number} has been marked paid. Reference: ${text(body.payout_reference,140)}.`
+        : status==='approved'
+          ? `Your settlement for order ${payoutOwner.rows[0].order_number} has been approved for manual bank transfer.`
+          : `Your settlement for order ${payoutOwner.rows[0].order_number} has been placed on hold by marketplace administration.`,
+      target_tab:'payouts',dedupe_key:`seller-payout-${status}:${id}`,metadata:{payout_id:id,status}
+    });
     await audit(db,user.id,'PAYOUT_STATUS_CHANGED','payout',id,{status}); return {ok:true};
   }
   if(action==='admin.confirm-delivery') return adminConfirmDelivery(db,req,body);
@@ -1135,8 +1284,13 @@ async function adminAction(db,req,body) {
   if(action==='admin.order-status') {
     const status=['processing','dispatched','delivered','cancelled'].includes(body.status)?body.status:null;
     if(!status) throw new HttpError(400,'Invalid order status.');
-    const {rows}=await db.query('UPDATE market_orders SET status=$2,updated_at=now() WHERE id=$1 RETURNING id',[id,status]);
+    const {rows}=await db.query('UPDATE market_orders SET status=$2,updated_at=now() WHERE id=$1 RETURNING id,buyer_id,order_number',[id,status]);
     if(!rows.length) throw new HttpError(404,'Order not found.');
+    await createNotification(db,rows[0].buyer_id,{
+      type:'order_status',title:'Your order status changed',
+      message:`Order ${rows[0].order_number} is now ${status.replaceAll('_',' ')}.`,
+      target_tab:'orders',dedupe_key:`buyer-admin-order-status-${status}:${id}`,metadata:{order_id:id,status}
+    });
     await audit(db,user.id,'ORDER_STATUS_CHANGED','order',id,{status}); return {ok:true};
   }
   throw new HttpError(400,'Unsupported administration action.');
@@ -1171,6 +1325,8 @@ async function handle(db,req,res,body) {
   if(action==='buyer.confirm-delivery') return buyerConfirmDelivery(db,req,body);
   if(action==='buyer.open-dispute') return buyerOpenDispute(db,req,body);
   if(action==='seller.respond-dispute') return sellerRespondDispute(db,req,body);
+  if(action==='notifications.list') return notificationsList(db,req);
+  if(action==='notifications.mark-read') return notificationsMarkRead(db,req,body);
   if(action==='wishlist.list') return wishlist(db,req);
   if(action==='wishlist.toggle') return toggleWishlist(db,req,body);
   if(action==='reviews.create') return addReview(db,req,body);
