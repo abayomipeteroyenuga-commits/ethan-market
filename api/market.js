@@ -631,7 +631,7 @@ async function growthPromoPreview(db,req,body) {
   }
   const promo=await resolvePromo(db,user,text(body.code,40).toUpperCase(),subtotal,fee,false);
   const settings=await getSettings(db);
-  return {code:promo.code,discount_kobo:promo.discount_kobo,subtotal_kobo:subtotal,estimated_total_kobo:Math.max(0,subtotal+(physical?Number(settings.physical_shipping_kobo||200000):0)-promo.discount_kobo)};
+  return {code:promo.code,discount_kobo:promo.discount_kobo,subtotal_kobo:subtotal,estimated_total_kobo:Math.max(0,subtotal+(physical?Number(settings.physical_shipping_kobo??200000):0)-promo.discount_kobo)};
 }
 
 async function adminGrowthOverview(db,req) {
