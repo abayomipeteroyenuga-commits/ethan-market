@@ -15,6 +15,7 @@
     try { localStorage.setItem(growthKey, JSON.stringify(saved)); } catch {}
     return {referral_code:saved.ref||'',campaign_slug:saved.campaign||'',utm_source:saved.source||'',utm_medium:saved.medium||''};
   }
+  growthPayload(); // Capture ?ref= and UTM parameters before the form switches routes.
 
   function setMode(mode, updateUrl = true) {
     const registering = mode === 'register';
