@@ -12,6 +12,24 @@
   },
   "headers": [
     {
+      "source": "/account.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/account.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
       "source": "/",
       "headers": [
         {
@@ -97,12 +115,28 @@
   ],
   "rewrites": [
     {
+      "source": "/account",
+      "destination": "/account.html"
+    },
+    {
+      "source": "/account/",
+      "destination": "/account.html"
+    },
+    {
+      "source": "/login",
+      "destination": "/account.html?mode=login"
+    },
+    {
+      "source": "/login/",
+      "destination": "/account.html?mode=login"
+    },
+    {
       "source": "/register",
-      "destination": "/"
+      "destination": "/account.html?mode=register"
     },
     {
       "source": "/register/",
-      "destination": "/"
+      "destination": "/account.html?mode=register"
     }
   ]
 }
