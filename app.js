@@ -795,7 +795,7 @@ async function start() {
   }
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('/sw.js?v=20261120-market-register-v1.4', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=20261120-growth-v1', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 start();
