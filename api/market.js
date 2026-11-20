@@ -109,6 +109,101 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_orders_buyer_idx ON market_orders(buyer_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_orders_status_idx ON market_orders(status, payment_status, created_at DESC)`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS discount_kobo bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS promo_code text NOT NULL DEFAULT ''`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS campaign_slug text NOT NULL DEFAULT ''`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS affiliate_user_id uuid REFERENCES market_users(id)`,
+  `CREATE TABLE IF NOT EXISTS market_growth_profiles (
+    user_id uuid PRIMARY KEY REFERENCES market_users(id) ON DELETE CASCADE,
+    referral_code text NOT NULL UNIQUE,
+    affiliate_status text NOT NULL DEFAULT 'none' CHECK (affiliate_status IN ('none','pending','approved','paused')),
+    affiliate_commission_bps int NOT NULL DEFAULT 0 CHECK (affiliate_commission_bps BETWEEN 0 AND 5000),
+    first_campaign_slug text NOT NULL DEFAULT '',
+    first_source text NOT NULL DEFAULT '',
+    first_medium text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS market_growth_attributions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    referrer_user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    referred_user_id uuid NOT NULL UNIQUE REFERENCES market_users(id) ON DELETE CASCADE,
+    referral_code text NOT NULL,
+    status text NOT NULL DEFAULT 'signed_up' CHECK (status IN ('signed_up','first_order','seller_approved')),
+    first_order_id uuid REFERENCES market_orders(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    first_order_at timestamptz,
+    seller_approved_at timestamptz,
+    CHECK (referrer_user_id <> referred_user_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_growth_attributions_referrer_idx ON market_growth_attributions(referrer_user_id,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_growth_campaigns (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL,
+    slug text NOT NULL UNIQUE,
+    source text NOT NULL DEFAULT '',
+    medium text NOT NULL DEFAULT '',
+    budget_kobo bigint NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','completed')),
+    starts_at timestamptz,
+    ends_at timestamptz,
+    created_by uuid REFERENCES market_users(id),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS market_promo_codes (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code text NOT NULL UNIQUE,
+    discount_bps int NOT NULL CHECK (discount_bps BETWEEN 1 AND 10000),
+    max_discount_kobo bigint NOT NULL DEFAULT 0,
+    min_subtotal_kobo bigint NOT NULL DEFAULT 0,
+    max_redemptions int,
+    active boolean NOT NULL DEFAULT true,
+    campaign_id uuid REFERENCES market_growth_campaigns(id) ON DELETE SET NULL,
+    starts_at timestamptz,
+    ends_at timestamptz,
+    created_by uuid REFERENCES market_users(id),
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS market_promo_redemptions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    promo_id uuid NOT NULL REFERENCES market_promo_codes(id),
+    order_id uuid NOT NULL UNIQUE REFERENCES market_orders(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES market_users(id),
+    discount_kobo bigint NOT NULL,
+    status text NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','redeemed','expired','failed')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    redeemed_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_promo_redemptions_usage_idx ON market_promo_redemptions(promo_id,status,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_affiliate_conversions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    affiliate_user_id uuid NOT NULL REFERENCES market_users(id),
+    order_id uuid NOT NULL UNIQUE REFERENCES market_orders(id) ON DELETE CASCADE,
+    referral_code text NOT NULL,
+    sale_kobo bigint NOT NULL,
+    marketplace_fee_kobo bigint NOT NULL,
+    commission_kobo bigint NOT NULL,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','paid','void')),
+    payout_reference text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    paid_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_affiliate_conversions_affiliate_idx ON market_affiliate_conversions(affiliate_user_id,status,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_growth_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type text NOT NULL,
+    user_id uuid REFERENCES market_users(id) ON DELETE SET NULL,
+    order_id uuid REFERENCES market_orders(id) ON DELETE SET NULL,
+    campaign_slug text NOT NULL DEFAULT '',
+    source text NOT NULL DEFAULT '',
+    medium text NOT NULL DEFAULT '',
+    referral_code text NOT NULL DEFAULT '',
+    path text NOT NULL DEFAULT '',
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_growth_events_campaign_idx ON market_growth_events(campaign_slug,event_type,created_at DESC)`,
+
   `CREATE TABLE IF NOT EXISTS market_order_items (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES market_orders(id) ON DELETE CASCADE,
     product_id uuid REFERENCES market_products(id), seller_id uuid NOT NULL REFERENCES market_sellers(id),
@@ -217,7 +312,7 @@ async function ensureSchema() {
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
-      'market_audit_logs','market_rate_limits','market_notifications'
+      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events'
     ];
     const countTables = async (executor) => {
       const result = await executor.query(
@@ -380,6 +475,200 @@ async function createSession(db, res, userId) {
   setCookie(res, COOKIE, token, expires);
 }
 
+function createGrowthCode() {
+  return 'EM' + crypto.randomBytes(5).toString('hex').toUpperCase();
+}
+
+async function ensureGrowthProfile(db,userId,campaign={}) {
+  let result=await db.query('SELECT * FROM market_growth_profiles WHERE user_id=$1',[userId]);
+  if(result.rows[0]) {
+    const slug=text(campaign.campaign_slug,100),source=text(campaign.source,80),medium=text(campaign.medium,80);
+    if(slug||source||medium) {
+      result=await db.query(
+        `UPDATE market_growth_profiles SET first_campaign_slug=CASE WHEN first_campaign_slug='' THEN $2 ELSE first_campaign_slug END,
+         first_source=CASE WHEN first_source='' THEN $3 ELSE first_source END,
+         first_medium=CASE WHEN first_medium='' THEN $4 ELSE first_medium END
+         WHERE user_id=$1 RETURNING *`,[userId,slug,source,medium]
+      );
+    }
+    return result.rows[0];
+  }
+  for(let attempt=0;attempt<4;attempt++) {
+    try {
+      result=await db.query(
+        `INSERT INTO market_growth_profiles(user_id,referral_code,first_campaign_slug,first_source,first_medium)
+         VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO NOTHING RETURNING *`,
+        [userId,createGrowthCode(),text(campaign.campaign_slug,100),text(campaign.source,80),text(campaign.medium,80)]
+      );
+      if(result.rows[0]) return result.rows[0];
+      result=await db.query('SELECT * FROM market_growth_profiles WHERE user_id=$1',[userId]);
+      if(result.rows[0]) return result.rows[0];
+    } catch(error) { if(error.code!=='23505') throw error; }
+  }
+  throw new HttpError(503,'Could not create your marketplace referral code. Please try again.');
+}
+
+async function trackGrowthEvent(db,fields={}) {
+  await db.query(
+    `INSERT INTO market_growth_events(event_type,user_id,order_id,campaign_slug,source,medium,referral_code,path,metadata)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+    [text(fields.event_type,60)||'market_event',fields.user_id||null,fields.order_id||null,
+      text(fields.campaign_slug,100),text(fields.source,80),text(fields.medium,80),
+      text(fields.referral_code,40).toUpperCase(),text(fields.path,180),
+      JSON.stringify(fields.metadata&&typeof fields.metadata==='object'?fields.metadata:{})]
+  );
+}
+
+async function resolvePromo(db,user,code,subtotal,marketplaceFee,lock=false) {
+  if(!code) return null;
+  const result=await db.query(
+    `SELECT * FROM market_promo_codes WHERE code=$1 AND active=true
+     AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>=now())
+     ${lock?'FOR UPDATE':''}`,[code]
+  );
+  const promo=result.rows[0];
+  if(!promo) throw new HttpError(400,'That promo code is invalid, expired or inactive.');
+  if(subtotal<Number(promo.min_subtotal_kobo||0)) throw new HttpError(400,'Your basket does not meet the minimum spend for this promo code.');
+  const usage=await db.query(
+    `SELECT count(*)::int AS count FROM market_promo_redemptions
+     WHERE promo_id=$1 AND status IN ('reserved','redeemed')
+       AND (status='redeemed' OR created_at>=now()-interval '30 minutes')`,[promo.id]
+  );
+  if(promo.max_redemptions!==null && Number(usage.rows[0]?.count||0)>=Number(promo.max_redemptions))
+    throw new HttpError(409,'This promo code has reached its redemption limit.');
+  const personal=await db.query(
+    `SELECT count(*)::int AS count FROM market_promo_redemptions
+     WHERE promo_id=$1 AND user_id=$2 AND status IN ('reserved','redeemed')
+       AND (status='redeemed' OR created_at>=now()-interval '30 minutes')`,[promo.id,user.id]
+  );
+  if(Number(personal.rows[0]?.count||0)>0) throw new HttpError(409,'This account has already used this promo code.');
+  const requested=Math.round(subtotal*Number(promo.discount_bps)/10000);
+  const capped=promo.max_discount_kobo>0?Math.min(requested,Number(promo.max_discount_kobo)):requested;
+  const discount=Math.min(capped,marketplaceFee);
+  if(discount<1) throw new HttpError(400,'This promo code cannot be applied to this basket.');
+  return {id:promo.id,code:promo.code,discount_kobo:discount,discount_bps:Number(promo.discount_bps)};
+}
+
+async function growthDashboard(db,req) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  const profile=await ensureGrowthProfile(db,user.id);
+  const [referrals,conversions]=await Promise.all([
+    db.query(
+      `SELECT count(*)::int AS signups,count(*) FILTER(WHERE status='first_order')::int AS first_orders,
+       count(*) FILTER(WHERE status='seller_approved')::int AS approved_sellers
+       FROM market_growth_attributions WHERE referrer_user_id=$1`,[user.id]
+    ),
+    db.query(
+      `SELECT count(*)::int AS orders,COALESCE(sum(sale_kobo),0)::bigint AS sales_kobo,
+       COALESCE(sum(commission_kobo) FILTER(WHERE status IN ('pending','approved')),0)::bigint AS awaiting_kobo,
+       COALESCE(sum(commission_kobo) FILTER(WHERE status='paid'),0)::bigint AS paid_kobo
+       FROM market_affiliate_conversions WHERE affiliate_user_id=$1`,[user.id]
+    )
+  ]);
+  const recent=await db.query(
+    `SELECT a.status,a.created_at,u.full_name FROM market_growth_attributions a
+     JOIN market_users u ON u.id=a.referred_user_id WHERE a.referrer_user_id=$1
+     ORDER BY a.created_at DESC LIMIT 20`,[user.id]
+  );
+  return {
+    referral_code:profile.referral_code,
+    referral_url:'https://market.ethandigitalacademy.org/?ref='+encodeURIComponent(profile.referral_code),
+    affiliate_status:profile.affiliate_status,
+    affiliate_commission_bps:Number(profile.affiliate_commission_bps||0),
+    referrals:referrals.rows[0],conversions:conversions.rows[0],recent:recent.rows
+  };
+}
+
+async function applyAffiliate(db,req) {
+  const user=await requireRole(req,db,['buyer','seller']);
+  const profile=await ensureGrowthProfile(db,user.id);
+  if(profile.affiliate_status==='approved') return {status:'approved'};
+  if(profile.affiliate_status==='pending') return {status:'pending'};
+  await db.query("UPDATE market_growth_profiles SET affiliate_status='pending' WHERE user_id=$1",[user.id]);
+  const admins=await db.query("SELECT id FROM market_users WHERE role IN ('admin','super_admin') AND is_active=true");
+  for(const admin of admins.rows) await createNotification(db,admin.id,{
+    type:'affiliate_application',title:'New affiliate application',
+    message:`${user.full_name} has applied to join the ETHAN MARKET affiliate programme.`,
+    target_tab:'growth',dedupe_key:`affiliate-application:${user.id}`,metadata:{affiliate_user_id:user.id}
+  });
+  await audit(db,user.id,'AFFILIATE_APPLICATION_SUBMITTED','affiliate',user.id);
+  return {status:'pending'};
+}
+
+async function growthTrack(db,req,body) {
+  const ip=String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
+  await rateLimit(db,'growth-track',ip,90,5);
+  const allowed=['page_view','product_view','store_view','signup_view','checkout_started'];
+  const event=text(body.event_type,60);
+  if(!allowed.includes(event)) throw new HttpError(400,'Unsupported growth tracking event.');
+  const user=await currentUser(req,db,false);
+  await trackGrowthEvent(db,{
+    event_type:event,user_id:user?.id||null,campaign_slug:text(body.campaign_slug,100),
+    source:text(body.source,80),medium:text(body.medium,80),
+    referral_code:text(body.referral_code,40).toUpperCase(),path:text(body.path,180)
+  });
+  return {ok:true};
+}
+
+async function growthPromoPreview(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  const items=Array.isArray(body.items)?body.items:[];
+  if(!items.length||items.length>30) throw new HttpError(400,'Add products to your basket before applying a code.');
+  const ids=[...new Set(items.map(x=>text(x.product_id,80)).filter(x=>/^[0-9a-f-]{36}$/i.test(x)))];
+  if(!ids.length) throw new HttpError(400,'Your basket is not valid.');
+  const {rows}=await db.query(
+    `SELECT p.id,p.price_kobo,p.product_type,s.commission_bps FROM market_products p
+     JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved'`,[ids]
+  );
+  if(rows.length!==ids.length) throw new HttpError(409,'One or more products are no longer available.');
+  let subtotal=0,fee=0,physical=false;
+  for(const product of rows) {
+    const q=items.filter(x=>x.product_id===product.id).reduce((n,x)=>n+Math.min(20,Math.max(1,parseInt(x.quantity,10)||1)),0);
+    subtotal+=Number(product.price_kobo)*q;
+    fee+=Math.round(Number(product.price_kobo)*q*Number(product.commission_bps)/10000);
+    if(product.product_type==='physical') physical=true;
+  }
+  const promo=await resolvePromo(db,user,text(body.code,40).toUpperCase(),subtotal,fee,false);
+  const settings=await getSettings(db);
+  return {code:promo.code,discount_kobo:promo.discount_kobo,subtotal_kobo:subtotal,estimated_total_kobo:Math.max(0,subtotal+(physical?Number(settings.physical_shipping_kobo||200000):0)-promo.discount_kobo)};
+}
+
+async function adminGrowthOverview(db,req) {
+  await requireRole(req,db,['admin','super_admin']);
+  const [summary,campaigns,promos,affiliates,conversions,referrals]=await Promise.all([
+    db.query(`SELECT
+      (SELECT count(*) FROM market_users WHERE created_at>=now()-interval '30 days')::int AS signups_30d,
+      (SELECT count(*) FROM market_growth_attributions WHERE created_at>=now()-interval '30 days')::int AS referred_signups_30d,
+      (SELECT count(*) FROM market_growth_attributions WHERE status='first_order' AND first_order_at>=now()-interval '30 days')::int AS referred_buyers_30d,
+      (SELECT count(*) FROM market_sellers WHERE seller_status='approved' AND updated_at>=now()-interval '30 days')::int AS approved_sellers_30d,
+      (SELECT count(*) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::int AS paid_orders_30d,
+      (SELECT COALESCE(sum(total_kobo),0) FROM market_orders WHERE payment_status='paid' AND created_at>=now()-interval '30 days')::bigint AS gmv_30d,
+      (SELECT count(*) FROM market_promo_redemptions WHERE status='redeemed' AND redeemed_at>=now()-interval '30 days')::int AS promo_redemptions_30d,
+      (SELECT count(*) FROM market_affiliate_conversions WHERE status='pending')::int AS affiliate_pending`),
+    db.query(`SELECT c.*,
+      (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='page_view')::int AS visits,
+      (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='signup_view')::int AS signup_visits,
+      (SELECT count(*) FROM market_orders o WHERE o.campaign_slug=c.slug AND o.payment_status='paid')::int AS orders,
+      (SELECT COALESCE(sum(o.total_kobo),0) FROM market_orders o WHERE o.campaign_slug=c.slug AND o.payment_status='paid')::bigint AS gmv_kobo
+      FROM market_growth_campaigns c ORDER BY c.created_at DESC LIMIT 100`),
+    db.query(`SELECT p.*,(SELECT count(*) FROM market_promo_redemptions r WHERE r.promo_id=p.id AND r.status='redeemed')::int AS redemptions,
+      (SELECT COALESCE(sum(r.discount_kobo),0) FROM market_promo_redemptions r WHERE r.promo_id=p.id AND r.status='redeemed')::bigint AS discount_spend
+      FROM market_promo_codes p ORDER BY p.created_at DESC LIMIT 100`),
+    db.query(`SELECT g.user_id,g.referral_code,g.affiliate_status,g.affiliate_commission_bps,u.full_name,u.email,
+      (SELECT count(*) FROM market_affiliate_conversions x WHERE x.affiliate_user_id=g.user_id)::int AS conversions,
+      (SELECT COALESCE(sum(commission_kobo),0) FROM market_affiliate_conversions x WHERE x.affiliate_user_id=g.user_id AND x.status IN ('pending','approved'))::bigint AS awaiting_kobo
+      FROM market_growth_profiles g JOIN market_users u ON u.id=g.user_id
+      WHERE g.affiliate_status<>'none' ORDER BY g.created_at DESC LIMIT 100`),
+    db.query(`SELECT x.*,u.full_name AS affiliate_name,o.order_number FROM market_affiliate_conversions x
+      JOIN market_users u ON u.id=x.affiliate_user_id JOIN market_orders o ON o.id=x.order_id
+      ORDER BY x.created_at DESC LIMIT 100`),
+    db.query(`SELECT a.*,r.full_name AS referrer_name,u.full_name AS referred_name,u.email AS referred_email
+      FROM market_growth_attributions a JOIN market_users r ON r.id=a.referrer_user_id
+      JOIN market_users u ON u.id=a.referred_user_id ORDER BY a.created_at DESC LIMIT 100`)
+  ]);
+  return {summary:summary.rows[0],campaigns:campaigns.rows,promos:promos.rows,affiliates:affiliates.rows,conversions:conversions.rows,referrals:referrals.rows};
+}
+
 async function authRegister(db, req, res, body) {
   const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
   await rateLimit(db, 'register', ip, 8, 60);
@@ -388,6 +677,8 @@ async function authRegister(db, req, res, body) {
   const phone = text(body.phone, 40);
   const password = String(body.password || '');
   const ownerToken = String(body.owner_token || '');
+  const referralCode=text(body.referral_code,40).toUpperCase();
+  const campaign={campaign_slug:text(body.campaign_slug,100),source:text(body.utm_source,80),medium:text(body.utm_medium,80)};
   if (fullName.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, 'Enter your full name and a valid email address.');
   if (password.length < 10 || Buffer.byteLength(password, 'utf8') > 128) throw new HttpError(400, 'Use a password of at least 10 characters.');
   let role = 'buyer';
@@ -415,6 +706,18 @@ async function authRegister(db, req, res, body) {
       await client.query("INSERT INTO market_settings(key,value) VALUES('owner_bootstrap_used','true'::jsonb) ON CONFLICT(key) DO UPDATE SET value='true'::jsonb,updated_at=now()");
       await client.query("DELETE FROM market_settings WHERE key='owner_bootstrap_token_hash'");
     }
+    await ensureGrowthProfile(client,user.id,campaign);
+    if(referralCode) {
+      const referrer=await client.query('SELECT user_id FROM market_growth_profiles WHERE upper(referral_code)=$1 LIMIT 1',[referralCode]);
+      if(referrer.rows[0] && referrer.rows[0].user_id!==user.id) {
+        await client.query(
+          `INSERT INTO market_growth_attributions(referrer_user_id,referred_user_id,referral_code)
+           VALUES($1,$2,$3) ON CONFLICT(referred_user_id) DO NOTHING`,
+          [referrer.rows[0].user_id,user.id,referralCode]
+        );
+      }
+    }
+    await trackGrowthEvent(client,{event_type:'signup',user_id:user.id,campaign_slug:campaign.campaign_slug,source:campaign.source,medium:campaign.medium,referral_code:referralCode});
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); if (e.code === '23505') throw new HttpError(409, 'An account with this email already exists.'); throw e; }
   finally { client.release(); }
@@ -526,6 +829,7 @@ async function applySeller(db, req, body) {
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id,store_name,slug,seller_status`,
       [user.id,storeName,slug,text(body.description,1500),text(body.phone,40),text(body.whatsapp,40),['individual','registered_business'].includes(body.business_type)?body.business_type:'individual',text(body.city,80),text(body.state,80),text(body.bank_name,120),encryptField(body.bank_code),encryptField(body.account_number),text(body.account_name,120),defaultCommission]
     );
+    await trackGrowthEvent(db,{event_type:'seller_application',user_id:user.id,referral_code:(await ensureGrowthProfile(db,user.id)).referral_code});
     await audit(db,user.id,'SELLER_APPLICATION_SUBMITTED','seller',rows[0].id);
     return { seller: rows[0] };
   } catch(e) { if(e.code==='23505') throw new HttpError(409,'That store address is already in use.'); throw e; }
@@ -536,7 +840,7 @@ async function createNotification(db, userId, fields = {}) {
   const type=text(fields.type,60)||'market_update';
   const title=text(fields.title,140)||'ETHAN MARKET update';
   const message=text(fields.message,500);
-  const targetTab=['orders','products','disputes','payouts','overview'].includes(fields.target_tab)?fields.target_tab:'orders';
+  const targetTab=['orders','products','disputes','payouts','overview','growth'].includes(fields.target_tab)?fields.target_tab:'orders';
   const dedupeKey=text(fields.dedupe_key,180);
   const metadata=fields.metadata&&typeof fields.metadata==='object'?fields.metadata:{};
   await db.query(
@@ -656,6 +960,10 @@ async function checkout(db, req, body) {
   let order;
   try {
     await dbClient.query('BEGIN');
+    await dbClient.query(
+      `UPDATE market_promo_redemptions r SET status='expired' FROM market_orders o
+       WHERE r.order_id=o.id AND r.status='reserved' AND (o.payment_status<>'pending' OR o.created_at<now()-interval '30 minutes')`
+    );
     await dbClient.query("UPDATE market_orders SET payment_status='failed',status='cancelled',updated_at=now() WHERE payment_status='pending' AND created_at < now()-interval '30 minutes'");
     const ids = [...quantities.keys()];
     const { rows: products } = await dbClient.query(
@@ -663,7 +971,7 @@ async function checkout(db, req, body) {
        JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved' FOR UPDATE OF p`, [ids]
     );
     if (products.length !== ids.length) throw new HttpError(409,'One or more products are no longer available. Refresh your cart.');
-    let subtotal = 0; let physical = false;
+    let subtotal = 0; let physical = false; let marketplaceFee = 0;
     const orderId = crypto.randomUUID();
     const orderNumber = 'EM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
     const ref = 'EM' + Date.now().toString() + crypto.randomBytes(5).toString('hex').toUpperCase();
@@ -683,12 +991,24 @@ async function checkout(db, req, body) {
       subtotal += Number(p.price_kobo) * quantity;
       if (p.product_type === 'physical') physical = true;
       const commission = Math.round(Number(p.price_kobo) * quantity * Number(p.commission_bps) / 10000);
+      marketplaceFee+=commission;
       itemSnapshots.push({p,quantity,commission,net:Number(p.price_kobo)*quantity-commission});
     }
     if (!Number.isSafeInteger(subtotal) || subtotal < 100) throw new HttpError(400,'The cart total is invalid.');
     const settings = await getSettings(dbClient);
     const shipping = physical ? money(settings.physical_shipping_kobo ?? 200000) : 0;
-    const total = subtotal + shipping;
+    const promoCode=text(body.promo_code,40).toUpperCase();
+    const promo=promoCode?await resolvePromo(dbClient,user,promoCode,subtotal,marketplaceFee,true):null;
+    const discount=promo?promo.discount_kobo:0;
+    const growthProfile=await ensureGrowthProfile(dbClient,user.id,{campaign_slug:text(body.campaign_slug,100),source:text(body.utm_source,80),medium:text(body.utm_medium,80)});
+    const attribution=await dbClient.query(
+      `SELECT a.referrer_user_id,g.affiliate_status,g.affiliate_commission_bps
+       FROM market_growth_attributions a JOIN market_growth_profiles g ON g.user_id=a.referrer_user_id
+       WHERE a.referred_user_id=$1 LIMIT 1`,[user.id]
+    );
+    const affiliateUser=attribution.rows[0]?.affiliate_status==='approved'?attribution.rows[0].referrer_user_id:null;
+    const campaignSlug=text(body.campaign_slug,100)||growthProfile.first_campaign_slug||'';
+    const total = subtotal + shipping - discount;
     const recipient = text(body.recipient_name || user.full_name,120);
     const phone = text(body.phone || user.phone,40);
     const address = {
@@ -697,9 +1017,9 @@ async function checkout(db, req, body) {
     };
     if (physical && (!recipient || !phone || !address.line1 || !address.city || !address.state)) throw new HttpError(400,'Complete the delivery name, phone, street, city and state for physical items.');
     await dbClient.query(
-      `INSERT INTO market_orders(id,order_number,buyer_id,buyer_email,recipient_name,phone,subtotal_kobo,shipping_kobo,total_kobo,paystack_reference,shipping_address,buyer_note)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [orderId,orderNumber,user.id,user.email,recipient,phone,subtotal,shipping,total,ref,JSON.stringify(address),text(body.buyer_note,1000)]
+      `INSERT INTO market_orders(id,order_number,buyer_id,buyer_email,recipient_name,phone,subtotal_kobo,shipping_kobo,total_kobo,paystack_reference,shipping_address,buyer_note,discount_kobo,promo_code,campaign_slug,affiliate_user_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [orderId,orderNumber,user.id,user.email,recipient,phone,subtotal,shipping,total,ref,JSON.stringify(address),text(body.buyer_note,1000),discount,promo?.code||'',campaignSlug,affiliateUser]
     );
     for (const it of itemSnapshots) {
       await dbClient.query(
@@ -709,8 +1029,13 @@ async function checkout(db, req, body) {
       );
     }
     await dbClient.query('INSERT INTO market_payments(order_id,reference,amount_kobo) VALUES($1,$2,$3)',[orderId,ref,total]);
+    if(promo) await dbClient.query(
+      `INSERT INTO market_promo_redemptions(promo_id,order_id,user_id,discount_kobo,status)
+       VALUES($1,$2,$3,$4,'reserved')`,[promo.id,orderId,user.id,discount]
+    );
+    await trackGrowthEvent(dbClient,{event_type:'checkout_started',user_id:user.id,order_id:orderId,campaign_slug:campaignSlug,metadata:{promo_code:promo?.code||'',affiliate_attributed:!!affiliateUser}});
     await dbClient.query('COMMIT');
-    order={id:orderId,order_number:orderNumber,reference:ref,total_kobo:total,email:user.email};
+    order={id:orderId,order_number:orderNumber,reference:ref,total_kobo:total,email:user.email,discount_kobo:discount,promo_code:promo?.code||''};
   } catch(e) { await dbClient.query('ROLLBACK'); throw e; }
   finally { dbClient.release(); }
 
@@ -726,6 +1051,7 @@ async function checkout(db, req, body) {
   } catch (error) {
     await db.query("UPDATE market_orders SET payment_status='failed',status='cancelled',updated_at=now() WHERE id=$1 AND payment_status='pending'",[order.id]);
     await db.query("UPDATE market_payments SET status='failed' WHERE reference=$1 AND status='pending'",[order.reference]);
+    await db.query("UPDATE market_promo_redemptions SET status='failed' WHERE order_id=$1 AND status='reserved'",[order.id]);
     throw error;
   }
 }
@@ -772,6 +1098,39 @@ async function finalizePaid(db, transaction) {
          FROM market_order_items WHERE order_id=$1
          ON CONFLICT(order_item_id) DO NOTHING`,[order.id,holdDays]
       );
+      await client.query("UPDATE market_promo_redemptions SET status='redeemed',redeemed_at=now() WHERE order_id=$1 AND status='reserved'",[order.id]);
+      await client.query(
+        `UPDATE market_growth_attributions SET status='first_order',first_order_id=$2,first_order_at=now()
+         WHERE referred_user_id=$1 AND status='signed_up'`,[order.buyer_id,order.id]
+      );
+      const referralOwner=await client.query(
+        `SELECT a.referrer_user_id,g.referral_code,g.affiliate_status,g.affiliate_commission_bps
+         FROM market_growth_attributions a JOIN market_growth_profiles g ON g.user_id=a.referrer_user_id
+         WHERE a.referred_user_id=$1 LIMIT 1`,[order.buyer_id]
+      );
+      if(referralOwner.rows[0]?.affiliate_status==='approved' && Number(referralOwner.rows[0].affiliate_commission_bps)>0) {
+        const totals=await client.query(
+          `SELECT COALESCE(sum(unit_price_kobo*quantity),0)::bigint AS sales,
+           COALESCE(sum(commission_kobo),0)::bigint AS fee FROM market_order_items WHERE order_id=$1`,[order.id]
+        );
+        const sales=Number(totals.rows[0].sales||0),fee=Number(totals.rows[0].fee||0);
+        const promoDiscount=Number((await client.query('SELECT discount_kobo FROM market_orders WHERE id=$1',[order.id])).rows[0]?.discount_kobo||0);
+        const availableFee=Math.max(0,fee-promoDiscount);
+        const affiliateCommission=Math.min(availableFee,Math.round(fee*Number(referralOwner.rows[0].affiliate_commission_bps)/10000));
+        if(affiliateCommission>0) {
+          await client.query(
+            `INSERT INTO market_affiliate_conversions(affiliate_user_id,order_id,referral_code,sale_kobo,marketplace_fee_kobo,commission_kobo)
+             VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(order_id) DO NOTHING`,
+            [referralOwner.rows[0].referrer_user_id,order.id,referralOwner.rows[0].referral_code,sales,fee,affiliateCommission]
+          );
+          await createNotification(client,referralOwner.rows[0].referrer_user_id,{
+            type:'affiliate_conversion',title:'A referral made a purchase',
+            message:`A customer you referred completed order ${order.order_number}. Your affiliate reward is awaiting review.`,
+            target_tab:'growth',dedupe_key:`affiliate-sale:${order.id}`,metadata:{order_id:order.id,order_number:order.order_number,commission_kobo:affiliateCommission}
+          });
+        }
+      }
+      await trackGrowthEvent(client,{event_type:'purchase',user_id:order.buyer_id,order_id:order.id,campaign_slug:order.campaign_slug||'',metadata:{total_kobo:Number(order.total_kobo),promo_code:order.promo_code||''}});
       await createNotification(client,order.buyer_id,{
         type:'order_paid',title:'Payment confirmed',
         message:`Your payment for order ${order.order_number} was confirmed. Your purchases are now available in your order history.`,
@@ -1204,6 +1563,7 @@ async function adminList(db,req,kind) {
       JOIN market_users u ON u.id=s.user_id ORDER BY CASE d.status WHEN 'open' THEN 0 WHEN 'under_review' THEN 1 ELSE 2 END,d.opened_at DESC LIMIT 500`);
     return {disputes:rows};
   }
+  if(kind==='growth') return adminGrowthOverview(db,req);
   if(kind==='settings') return {settings:await getSettings(db)};
   throw new HttpError(400,'Unknown administration list.');
 }
@@ -1212,12 +1572,96 @@ async function adminAction(db,req,body) {
   const user=await requireRole(req,db,['admin','super_admin']);
   const action=body.action;
   const id=text(body.id,80);
+  if(action==='admin.growth-campaign-save') {
+    const name=text(body.name,120),slug=text(body.slug,80).toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-|-$/g,'');
+    if(name.length<3||slug.length<3) throw new HttpError(400,'Enter a campaign name and a valid URL slug.');
+    const status=['active','paused','completed'].includes(body.status)?body.status:'active';
+    const budget=money(body.budget_kobo);
+    if(body.id) {
+      const updated=await db.query(
+        `UPDATE market_growth_campaigns SET name=$2,slug=$3,source=$4,medium=$5,budget_kobo=$6,status=$7,updated_at=now()
+         WHERE id=$1 RETURNING id`,[text(body.id,80),name,slug,text(body.source,80),text(body.medium,80),budget,status]
+      );
+      if(!updated.rows.length) throw new HttpError(404,'Campaign not found.');
+    } else {
+      await db.query(
+        `INSERT INTO market_growth_campaigns(name,slug,source,medium,budget_kobo,status,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7)`,[name,slug,text(body.source,80),text(body.medium,80),budget,status,user.id]
+      );
+    }
+    await audit(db,user.id,'GROWTH_CAMPAIGN_SAVED','campaign',slug,{status});
+    return {ok:true};
+  }
+  if(action==='admin.growth-promo-save') {
+    const code=text(body.code,40).toUpperCase().replace(/[^A-Z0-9-]/g,'');
+    const bps=Math.min(10000,Math.max(1,parseInt(body.discount_bps,10)||0));
+    const maxDiscount=money(body.max_discount_kobo),minimum=money(body.min_subtotal_kobo);
+    const maxUses=body.max_redemptions?Math.min(100000,Math.max(1,parseInt(body.max_redemptions,10)||1)):null;
+    if(code.length<4) throw new HttpError(400,'Promo codes must contain at least four letters or numbers.');
+    await db.query(
+      `INSERT INTO market_promo_codes(code,discount_bps,max_discount_kobo,min_subtotal_kobo,max_redemptions,active,created_by)
+       VALUES($1,$2,$3,$4,$5,true,$6)`,[code,bps,maxDiscount,minimum,maxUses,user.id]
+    );
+    await audit(db,user.id,'GROWTH_PROMO_CREATED','promo',code,{discount_bps:bps,max_redemptions:maxUses});
+    return {ok:true,code};
+  }
+  if(action==='admin.growth-promo-status') {
+    const active=body.active===true;
+    const result=await db.query('UPDATE market_promo_codes SET active=$2 WHERE id=$1 RETURNING id',[text(body.id,80),active]);
+    if(!result.rows.length) throw new HttpError(404,'Promo code not found.');
+    return {ok:true};
+  }
+  if(action==='admin.growth-campaign-status') {
+    const status=['active','paused','completed'].includes(body.status)?body.status:null;
+    if(!status) throw new HttpError(400,'Invalid campaign status.');
+    const result=await db.query('UPDATE market_growth_campaigns SET status=$2,updated_at=now() WHERE id=$1 RETURNING id',[text(body.id,80),status]);
+    if(!result.rows.length) throw new HttpError(404,'Campaign not found.');
+    return {ok:true};
+  }
+  if(action==='admin.affiliate-status') {
+    const status=['approved','paused','none'].includes(body.status)?body.status:null;
+    if(!status) throw new HttpError(400,'Invalid affiliate status.');
+    const bps=Math.min(5000,Math.max(0,parseInt(body.commission_share_bps,10)||0));
+    const result=await db.query(
+      `UPDATE market_growth_profiles SET affiliate_status=$2,affiliate_commission_bps=$3 WHERE user_id=$1 RETURNING user_id`,
+      [text(body.user_id,80),status,bps]
+    );
+    if(!result.rows.length) throw new HttpError(404,'Affiliate profile not found.');
+    await createNotification(db,result.rows[0].user_id,{
+      type:'affiliate_status',title:'Your affiliate application was updated',
+      message:status==='approved'?'You have been approved for the ETHAN MARKET affiliate programme. Share your referral link to bring customers.':'Your affiliate programme status is now '+status+'.',
+      target_tab:'growth',dedupe_key:`affiliate-status-${status}:${result.rows[0].user_id}:${Date.now()}`
+    });
+    await audit(db,user.id,'AFFILIATE_STATUS_CHANGED','affiliate',result.rows[0].user_id,{status,commission_share_bps:bps});
+    return {ok:true};
+  }
+  if(action==='admin.affiliate-conversion') {
+    const status=['approved','paid','void'].includes(body.status)?body.status:null;
+    if(!status) throw new HttpError(400,'Invalid affiliate conversion status.');
+    if(status==='paid'&&!text(body.payout_reference,140)) throw new HttpError(400,'Record the cleared bank transfer reference first.');
+    const result=await db.query(
+      `UPDATE market_affiliate_conversions SET status=$2,payout_reference=CASE WHEN $2='paid' THEN $3 ELSE payout_reference END,
+       paid_at=CASE WHEN $2='paid' THEN now() ELSE paid_at END
+       WHERE id=$1 AND status IN ('pending','approved') RETURNING affiliate_user_id,commission_kobo,order_id`,
+      [text(body.id,80),status,text(body.payout_reference,140)]
+    );
+    if(!result.rows.length) throw new HttpError(409,'Affiliate conversion cannot be updated.');
+    await createNotification(db,result.rows[0].affiliate_user_id,{
+      type:'affiliate_reward',title:status==='paid'?'Affiliate reward paid':'Affiliate conversion updated',
+      message:status==='paid'?`Your affiliate reward has been recorded as paid. Reference: ${text(body.payout_reference,140)}.`:`Your affiliate conversion status is now ${status.replaceAll('_',' ')}.`,
+      target_tab:'growth',dedupe_key:`affiliate-conversion-${status}:${text(body.id,80)}`
+    });
+    return {ok:true};
+  }
   if(action==='admin.seller-status') {
     const status=['approved','rejected','suspended'].includes(body.status)?body.status:null;
     if(!status) throw new HttpError(400,'Invalid seller status.');
     const {rows}=await db.query('UPDATE market_sellers SET seller_status=$2,updated_at=now() WHERE id=$1 RETURNING user_id,store_name',[id,status]);
     if(!rows.length) throw new HttpError(404,'Seller not found.');
-    if(status==='approved') await db.query("UPDATE market_users SET role='seller',updated_at=now() WHERE id=$1 AND role='buyer'",[rows[0].user_id]);
+    if(status==='approved') {
+      await db.query("UPDATE market_users SET role='seller',updated_at=now() WHERE id=$1 AND role='buyer'",[rows[0].user_id]);
+      await db.query("UPDATE market_growth_attributions SET status='seller_approved',seller_approved_at=now() WHERE referred_user_id=$1",[rows[0].user_id]);
+    }
     if(status==='suspended') await db.query("UPDATE market_users SET role='buyer',updated_at=now() WHERE id=$1 AND role='seller'",[rows[0].user_id]);
     await createNotification(db,rows[0].user_id,{
       type:'seller_application_status',title:status==='approved'?'Your seller application was approved':'Your seller application was updated',
@@ -1333,6 +1777,10 @@ async function handle(db,req,res,body) {
   if(action==='seller.respond-dispute') return sellerRespondDispute(db,req,body);
   if(action==='notifications.list') return notificationsList(db,req);
   if(action==='notifications.mark-read') return notificationsMarkRead(db,req,body);
+  if(action==='growth.dashboard') return growthDashboard(db,req);
+  if(action==='growth.affiliate-apply') return applyAffiliate(db,req);
+  if(action==='growth.track') return growthTrack(db,req,body);
+  if(action==='growth.promo-preview') return growthPromoPreview(db,req,body);
   if(action==='wishlist.list') return wishlist(db,req);
   if(action==='wishlist.toggle') return toggleWishlist(db,req,body);
   if(action==='reviews.create') return addReview(db,req,body);
