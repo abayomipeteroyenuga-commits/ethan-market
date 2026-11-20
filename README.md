@@ -114,6 +114,7 @@ The schema is initialized by the first successful API request using `CREATE TABL
 
 - `1.0.0`: multi-vendor storefront, backend API, authentication, seller/admin workflows, product images, order records and Paystack integration.
 - `1.1.0`: seller storefront pages, persistent-cart hydration, buyer product reviews, admin seller payout account visibility, current Paystack timestamped webhook signature parsing, security headers and cache rotation.
+- `1.1.1`: serialize first-run database schema creation across concurrent serverless cold starts using a PostgreSQL advisory lock.
 
 ## Operational notes
 

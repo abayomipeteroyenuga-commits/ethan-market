@@ -165,7 +165,22 @@ async function ensureSchema() {
   if (schemaPromise) return schemaPromise;
   schemaPromise = (async () => {
     const db = getPool();
-    for (const sql of schema) await db.query(sql);
+    // Multiple serverless instances can cold-start together. A process-local
+    // promise is not enough to serialize DDL across those instances, so hold a
+    // PostgreSQL session advisory lock while the idempotent schema bootstrap runs.
+    const client = await db.connect();
+    const lockKey = 781204501;
+    let locked = false;
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
+      locked = true;
+      for (const sql of schema) await client.query(sql);
+    } finally {
+      if (locked) {
+        try { await client.query('SELECT pg_advisory_unlock($1)', [lockKey]); } catch {}
+      }
+      client.release();
+    }
   })().catch(err => { schemaPromise = null; throw err; });
   return schemaPromise;
 }

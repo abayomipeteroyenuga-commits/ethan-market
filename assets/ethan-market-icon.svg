@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="ETHAN MARKET icon">
+<rect width="128" height="128" rx="26" fill="#fff"/>
+<path d="M18 35h12l9 48h61l11-36H36" fill="none" stroke="#122b4a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="52" cy="100" r="7" fill="#122b4a"/><circle cx="91" cy="100" r="7" fill="#122b4a"/>
+<path d="M49 42V30c0-13 30-13 30 0v12" fill="none" stroke="#d7a53b" stroke-width="6" stroke-linecap="round"/>
+<path d="M43 39h43l-3 38H46z" fill="#17395f" stroke="#122b4a" stroke-width="2" stroke-linejoin="round"/>
+<path d="M56 50h17v5H61v5h10v5H61v5h13v5H56z" fill="#fff"/>
+<path d="M26 87c22 13 55 8 77-16" fill="none" stroke="#e0b047" stroke-width="5" stroke-linecap="round"/>
+</svg>
