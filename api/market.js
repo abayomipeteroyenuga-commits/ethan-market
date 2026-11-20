@@ -551,7 +551,7 @@ async function notificationsList(db, req) {
   const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
   const [items,unread]=await Promise.all([
     db.query(`SELECT id,type,title,message,target_tab,metadata,read_at,created_at
-      FROM market_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,[user.id]),
+      FROM market_notifications WHERE user_id=$1 ORDER BY created_at DESC,id DESC LIMIT 50`,[user.id]),
     db.query('SELECT count(*)::int AS count FROM market_notifications WHERE user_id=$1 AND read_at IS NULL',[user.id])
   ]);
   return {notifications:items.rows,unread_count:Number(unread.rows[0]?.count||0)};
@@ -1002,7 +1002,7 @@ async function buyerOpenDispute(db,req,body) {
   try {
     await client.query('BEGIN');
     const {rows}=await client.query(
-      `SELECT oi.id,oi.order_id,oi.seller_id,o.buyer_id,o.payment_status
+      `SELECT oi.id,oi.order_id,oi.seller_id,oi.product_name,o.buyer_id,o.order_number,o.payment_status
        FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
        WHERE oi.id=$1 FOR UPDATE OF oi,o`,[itemId]
     );
@@ -1024,7 +1024,7 @@ async function buyerOpenDispute(db,req,body) {
     const sellerOwner=await client.query('SELECT user_id FROM market_sellers WHERE id=$1',[item.seller_id]);
     if(sellerOwner.rows[0]) await createNotification(client,sellerOwner.rows[0].user_id,{
       type:'buyer_dispute',title:'A buyer reported an order problem',
-      message:`A buyer opened a case for order ${item.order_id} (item ${itemId}). Your unpaid settlement is on hold while the case is reviewed.`,
+      message:`A buyer opened a case about ${item.product_name} in order ${item.order_number}. Your unpaid settlement is on hold while the case is reviewed.`,
       target_tab:'disputes',dedupe_key:`seller-dispute-opened:${created.rows[0].id}`,metadata:{dispute_id:created.rows[0].id,order_id:item.order_id,order_item_id:itemId}
     });
     await client.query('COMMIT');
