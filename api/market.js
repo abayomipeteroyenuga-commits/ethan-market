@@ -648,7 +648,8 @@ async function adminGrowthOverview(db,req) {
       (SELECT count(*) FROM market_affiliate_conversions WHERE status='pending')::int AS affiliate_pending`),
     db.query(`SELECT c.*,
       (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='page_view')::int AS visits,
-      (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='signup_view')::int AS signup_visits,
+      (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='signup_view')::int AS signup_views,
+      (SELECT count(*) FROM market_growth_events e WHERE e.campaign_slug=c.slug AND e.event_type='signup')::int AS signups,
       (SELECT count(*) FROM market_orders o WHERE o.campaign_slug=c.slug AND o.payment_status='paid')::int AS orders,
       (SELECT COALESCE(sum(o.total_kobo),0) FROM market_orders o WHERE o.campaign_slug=c.slug AND o.payment_status='paid')::bigint AS gmv_kobo
       FROM market_growth_campaigns c ORDER BY c.created_at DESC LIMIT 100`),
