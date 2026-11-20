@@ -173,16 +173,34 @@ async function ensureSchema() {
   if (schemaPromise) return schemaPromise;
   schemaPromise = (async () => {
     const db = getPool();
-    // Multiple serverless instances can cold-start together. A process-local
-    // promise is not enough to serialize DDL across those instances, so hold a
-    // PostgreSQL session advisory lock while the idempotent schema bootstrap runs.
+    // Normal production requests should not replay all DDL on every cold start.
+    // Check the complete marketplace table set first; only bootstrap when needed.
+    const requiredTables = [
+      'market_users','market_sessions','market_categories','market_sellers',
+      'market_products','market_orders','market_order_items','market_payments',
+      'market_payouts','market_wishlists','market_reviews','market_settings',
+      'market_audit_logs','market_rate_limits'
+    ];
+    const countTables = async (executor) => {
+      const result = await executor.query(
+        "SELECT COUNT(*)::int AS count FROM pg_tables WHERE schemaname='public' AND tablename = ANY($1::text[])",
+        [requiredTables]
+      );
+      return Number(result.rows[0]?.count || 0);
+    };
+    if (await countTables(db) === requiredTables.length) return;
+
+    // Serialize only a genuine schema bootstrap. Re-check after obtaining the
+    // lock in case another cold-start instance completed it while we waited.
     const client = await db.connect();
     const lockKey = 781204501;
     let locked = false;
     try {
       await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
       locked = true;
-      for (const sql of schema) await client.query(sql);
+      if (await countTables(client) !== requiredTables.length) {
+        for (const sql of schema) await client.query(sql);
+      }
     } finally {
       if (locked) {
         try { await client.query('SELECT pg_advisory_unlock($1)', [lockKey]); } catch {}
