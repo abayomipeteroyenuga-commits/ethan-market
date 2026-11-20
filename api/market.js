@@ -1083,7 +1083,8 @@ async function adminAction(db,req,body) {
   if(action==='admin.settings') {
     const commission=Math.min(Math.max(parseInt(body.commission_bps,10)||0,0),5000);
     const shipping=money(body.physical_shipping_kobo);
-    await db.query("INSERT INTO market_settings(key,value) VALUES('commission_bps',$1::jsonb),('physical_shipping_kobo',$2::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()",[JSON.stringify(commission),JSON.stringify(shipping)]);
+    const holdDays=Math.min(30,Math.max(1,parseInt(body.seller_payout_hold_days,10)||7));
+    await db.query("INSERT INTO market_settings(key,value) VALUES('commission_bps',$1::jsonb),('physical_shipping_kobo',$2::jsonb),('seller_payout_hold_days',$3::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()",[JSON.stringify(commission),JSON.stringify(shipping),JSON.stringify(holdDays)]);
     await db.query('UPDATE market_sellers SET commission_bps=$1,updated_at=now()', [commission]);
     await audit(db,user.id,'MARKET_SETTINGS_UPDATED','settings','market'); return {settings:await getSettings(db)};
   }
