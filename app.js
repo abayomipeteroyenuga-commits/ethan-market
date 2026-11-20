@@ -483,7 +483,7 @@ async function start() {
   // to open Account and switch from Sign in to Create account.
   const params = new URLSearchParams(location.search);
   const directRegistration =
-    location.pathname.replace(/\\/+$/, '') === '/register' ||
+    (location.pathname === '/register' || location.pathname === '/register/') ||
     params.get('auth') === 'register';
   if (directRegistration) {
     if (state.user) openDashboard('overview');
