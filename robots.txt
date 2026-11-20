@@ -1,4 +1,9 @@
 User-agent: *
 Allow: /
 Disallow: /api/
+Disallow: /account
+Disallow: /login
+Disallow: /register
 Sitemap: https://market.ethandigitalacademy.org/sitemap.xml
+Sitemap: https://market.ethandigitalacademy.org/sitemap-products.xml
+Sitemap: https://market.ethandigitalacademy.org/sitemap-stores.xml
