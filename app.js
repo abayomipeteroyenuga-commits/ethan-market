@@ -478,8 +478,20 @@ async function start() {
   await refreshSession();
   renderCart();
   await verifyPaymentFromUrl();
+
+  // Allow a shareable, direct registration URL without requiring the visitor
+  // to open Account and switch from Sign in to Create account.
+  const params = new URLSearchParams(location.search);
+  const directRegistration =
+    location.pathname.replace(/\\/+$/, '') === '/register' ||
+    params.get('auth') === 'register';
+  if (directRegistration) {
+    if (state.user) openDashboard('overview');
+    else openAuth('register');
+  }
+
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('/sw.js?v=20261114-market-v1.1', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=20261120-market-register-v1.3', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 start();
