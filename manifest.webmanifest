@@ -1,0 +1,10 @@
+{
+  "name": "ETHAN MARKET",
+  "short_name": "ETHAN MARKET",
+  "description": "Discover. Shop. Grow.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f7f3",
+  "theme_color": "#122b4a",
+  "icons": [{"src":"/assets/ethan-market-mark.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}

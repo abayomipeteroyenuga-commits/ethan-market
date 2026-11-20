@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en-NG">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#122b4a">
+  <meta name="description" content="ETHAN MARKET — discover products from trusted independent sellers. Shop physical and digital products in one marketplace.">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+  <link rel="canonical" href="https://market.ethandigitalacademy.org/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="ETHAN MARKET — Discover. Shop. Grow.">
+  <meta property="og:description" content="Shop physical and digital products from independent businesses and creators on ETHAN MARKET.">
+  <meta property="og:url" content="https://market.ethandigitalacademy.org/">
+  <meta property="og:image" content="https://market.ethandigitalacademy.org/assets/ethan-market-mark.svg">
+  <title>ETHAN MARKET — Discover. Shop. Grow.</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/assets/ethan-market-mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css?v=20261114-market-v1.1">
+</head>
+<body>
+  <div class="announcement"><span class="announcement-dot"></span> A new way to discover products, people and possibilities <a href="#sell">Become a seller <span>↗</span></a></div>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="ETHAN MARKET home">
+      <img src="/assets/ethan-market-mark.svg" alt="" width="42" height="42">
+      <span><b>ETHAN <strong>MARKET</strong></b><small>POWERED BY ETHAN DIGITAL ACADEMY</small></span>
+    </a>
+    <nav class="main-nav" id="main-nav" aria-label="Main navigation">
+      <a class="active" href="#home">Home</a>
+      <a href="#shop">Shop</a>
+      <a href="#categories">Categories</a>
+      <a href="#sell">Sell on Ethan</a>
+      <a href="#about">About</a>
+    </nav>
+    <div class="header-actions">
+      <button class="icon-action account-action" id="account-button" aria-label="Account" title="My account"><span class="user-icon">♙</span><span class="action-label">Account</span></button>
+      <button class="icon-action cart-action" id="open-cart" aria-label="Open shopping bag"><span class="bag-icon">▢</span><span class="action-label">Bag</span><i id="cart-count">0</i></button>
+      <button class="menu-toggle" id="mobile-menu" aria-label="Open menu" aria-expanded="false"><span></span><span></span></button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" id="home">
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> THE ETHAN MARKETPLACE</div>
+        <h1>Good finds.<br><em>Great possibilities.</em></h1>
+        <p>Shop thoughtfully selected products from independent sellers, growing businesses and digital creators — all in one place.</p>
+        <div class="hero-buttons"><a class="button button-primary" href="#shop">Explore the market <span>→</span></a><a class="button button-quiet" href="#sell">Open your store <span>↗</span></a></div>
+        <div class="hero-assurance"><span><b>✓</b> Seller-reviewed stores</span><span><b>✓</b> Secure checkout</span><span><b>✓</b> Physical + digital</span></div>
+      </div>
+      <div class="hero-art" aria-label="Marketplace product selection illustration">
+        <div class="hero-orbit orbit-one"></div><div class="hero-orbit orbit-two"></div>
+        <div class="hero-glow"></div>
+        <div class="hero-floating-card float-main"><div class="float-top"><span>ETHAN MARKET FINDS</span><i>✦</i></div><div class="float-product"><div class="float-emoji">🎧</div><div><b>Made for your everyday</b><small>Explore new arrivals</small></div></div><div class="float-progress"><span></span></div><div class="float-bottom"><span>Discover something new</span><b>→</b></div></div>
+        <div class="hero-mini-card mini-one"><span>✦</span><div><b>Local creators</b><small>Independent brands</small></div></div>
+        <div class="hero-mini-card mini-two"><span>▣</span><div><b>Digital goods</b><small>Ready when you are</small></div></div>
+        <div class="hero-stamp">DISCOVER<br><b>MORE</b></div>
+      </div>
+    </section>
+
+    <section class="trust-strip" aria-label="Marketplace benefits">
+      <div><span class="trust-icon">⌕</span><span><b>Discover more</b><small>Unique finds and useful ideas</small></span></div>
+      <div><span class="trust-icon">◇</span><span><b>Shop with confidence</b><small>Approved seller marketplace</small></span></div>
+      <div><span class="trust-icon">↗</span><span><b>Support businesses</b><small>Help independent sellers grow</small></span></div>
+      <div><span class="trust-icon">▣</span><span><b>Instant digital access</b><small>Digital products in one place</small></span></div>
+    </section>
+
+    <section class="section categories-section" id="categories">
+      <div class="section-heading"><div><div class="eyebrow">EXPLORE BY INTEREST</div><h2>Find your <em>something.</em></h2></div><a href="#shop" class="text-link">View all products <span>→</span></a></div>
+      <div class="category-grid" id="category-grid"><div class="skeleton category-skeleton"></div><div class="skeleton category-skeleton"></div><div class="skeleton category-skeleton"></div><div class="skeleton category-skeleton"></div></div>
+    </section>
+
+    <section class="shop-section" id="shop">
+      <div class="section shop-inner">
+        <div class="section-heading shop-heading"><div><div class="eyebrow">THE MARKET IS OPEN</div><h2>Explore the <em>collection.</em></h2><p>New discoveries from independent stores and creators.</p></div>
+          <form class="search-form" id="search-form" role="search"><span>⌕</span><input id="search-input" type="search" placeholder="Search products, stores…" aria-label="Search products and stores"><button type="submit">Search</button></form>
+        </div>
+        <div class="shop-toolbar"><div class="filter-chips" id="filter-chips"><button class="filter-chip selected" data-filter="all">All products</button><button class="filter-chip" data-filter="physical">Physical</button><button class="filter-chip" data-filter="digital">Digital</button><button class="filter-chip" data-filter="featured">Featured</button></div><div class="shop-sort"><span id="results-count">Loading products…</span><label for="sort-select">Sort by</label><select id="sort-select"><option value="featured">Recommended</option><option value="popular">Most popular</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option></select></div></div>
+        <div id="product-grid" class="product-grid"><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div></div>
+        <div class="empty-state" id="empty-state" hidden><div class="empty-icon">⌕</div><h3>Nothing here just yet.</h3><p>Try another search or browse a different category.</p><button class="button button-outline" id="clear-filters">Clear filters</button></div>
+      </div>
+    </section>
+
+    <section class="seller-banner" id="sell">
+      <div class="seller-banner-pattern"></div><div class="seller-banner-copy"><div class="eyebrow light-eyebrow">YOUR BUSINESS BELONGS HERE</div><h2>Have something<br><em>good to sell?</em></h2><p>Bring your products, creativity and business to a marketplace built to help you reach more customers.</p><button class="button button-light" id="seller-cta">Start selling on Ethan <span>→</span></button></div>
+      <div class="seller-banner-art"><div class="seller-ring"></div><div class="seller-tile tile-a">📦<small>Products</small></div><div class="seller-tile tile-b">✦<small>Your brand</small></div><div class="seller-tile tile-c">↗<small>More reach</small></div><div class="seller-core"><span>EM</span><b>SELL<br>GROW<br>THRIVE</b></div></div>
+    </section>
+
+    <section class="section how-section" id="about">
+      <div class="section-heading centered-heading"><div><div class="eyebrow">MADE FOR BUYERS AND BUILDERS</div><h2>Simple to shop.<br><em>Powerful to grow.</em></h2><p>One marketplace connecting customers with independent sellers and useful digital products.</p></div></div>
+      <div class="how-grid"><article><span>01</span><i>⌕</i><h3>Discover</h3><p>Search products, explore categories and find stores you’ll love.</p></article><article><span>02</span><i>▢</i><h3>Shop securely</h3><p>Keep your basket, check out and follow your order from your account.</p></article><article><span>03</span><i>↗</i><h3>Grow together</h3><p>Sell your products, manage orders and build your customer base.</p></article></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-main"><div class="footer-brand"><a class="brand brand-footer" href="#home"><img src="/assets/ethan-market-mark.svg" alt="" width="42" height="42"><span><b>ETHAN <strong>MARKET</strong></b><small>DISCOVER. SHOP. GROW.</small></span></a><p>A marketplace for useful products, independent businesses and digital creators.</p></div>
+      <div class="footer-col"><b>Explore</b><a href="#shop">Shop products</a><a href="#categories">Categories</a><a href="#sell">Become a seller</a></div>
+      <div class="footer-col"><b>Help & support</b><a href="mailto:ethandigitalacademy@gmail.com">Contact support</a><a href="#about">How it works</a><a href="#sell">Seller standards</a></div>
+      <div class="footer-col"><b>ETHAN ecosystem</b><a href="https://ethandigitalacademy.org" target="_blank" rel="noopener">Ethan Digital Academy ↗</a><a href="https://ethandigitalacademy.org" target="_blank" rel="noopener">About Ethan ↗</a></div>
+    </div>
+    <div class="footer-bottom"><span>© <span id="year"></span> ETHAN MARKET. Powered by Ethan Digital Academy.</span><span>Built for buyers. Open to builders.</span></div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <aside class="cart-drawer" id="cart-drawer" aria-hidden="true" aria-labelledby="cart-title">
+    <div class="drawer-head"><div><span class="eyebrow">YOUR SELECTION</span><h2 id="cart-title">Shopping bag <small id="drawer-count">(0)</small></h2></div><button class="close-button" id="close-cart" aria-label="Close shopping bag">×</button></div>
+    <div class="cart-items" id="cart-items"><div class="cart-empty"><span>▢</span><b>Your bag is empty.</b><p>Start exploring and add something you love.</p></div></div>
+    <div class="cart-footer"><div class="cart-subtotal"><span>Subtotal</span><b id="cart-subtotal">₦0</b></div><p>Delivery is calculated at checkout for physical products.</p><button class="button button-primary full-button" id="checkout-button" disabled>Continue to checkout <span>→</span></button><small class="secure-note">⌑ Secure checkout when payments are enabled</small></div>
+  </aside>
+
+  <div class="modal-backdrop" id="auth-modal" hidden><section class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title"><button class="close-button modal-close" data-close="auth-modal" aria-label="Close">×</button><div class="modal-kicker">WELCOME TO THE MARKET</div><h2 id="auth-title">Good to see you.</h2><p class="modal-intro" id="auth-intro">Sign in to manage your orders, wishlist and store.</p><div class="auth-tabs"><button class="auth-tab active" data-auth-mode="login">Sign in</button><button class="auth-tab" data-auth-mode="register">Create account</button></div>
+    <form id="auth-form" class="form-stack"><div class="form-field" id="auth-name-wrap" hidden><label for="auth-name">Full name</label><input id="auth-name" autocomplete="name" maxlength="120"></div><div class="form-field" id="auth-phone-wrap" hidden><label for="auth-phone">Phone number</label><input id="auth-phone" autocomplete="tel" maxlength="40" placeholder="080…"></div><div class="form-field"><label for="auth-email">Email address</label><input id="auth-email" type="email" required autocomplete="email"></div><div class="form-field"><label for="auth-password">Password</label><input id="auth-password" type="password" required minlength="10" autocomplete="current-password"><small>Use at least 10 characters.</small></div><div class="form-field" id="owner-token-wrap" hidden><label for="owner-token">One-time owner activation code</label><input id="owner-token" type="password" autocomplete="off"><small>Only required when activating the Ethan Market owner account.</small></div><p class="form-error" id="auth-error" role="alert"></p><button class="button button-primary full-button" id="auth-submit" type="submit">Sign in <span>→</span></button></form><div class="modal-footnote">By continuing, you agree to use ETHAN MARKET responsibly and provide accurate account information.</div></section></div>
+
+  <div class="modal-backdrop" id="seller-modal" hidden><section class="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="seller-title"><button class="close-button modal-close" data-close="seller-modal" aria-label="Close">×</button><div class="modal-kicker">SELL ON ETHAN</div><h2 id="seller-title">Open your store.</h2><p class="modal-intro">Tell us about your business. The marketplace team reviews seller applications before a store can publish products.</p><form id="seller-form" class="form-grid"><div class="form-field"><label for="store-name">Store / business name *</label><input id="store-name" required maxlength="120" placeholder="Your store name"></div><div class="form-field"><label for="store-slug">Preferred store URL</label><input id="store-slug" maxlength="80" placeholder="your-store"><small>Letters, numbers and hyphens.</small></div><div class="form-field span-2"><label for="store-description">What do you sell? *</label><textarea id="store-description" required minlength="10" maxlength="1500" rows="3" placeholder="Tell customers what makes your store special…"></textarea></div><div class="form-field"><label for="seller-phone">Business phone *</label><input id="seller-phone" required maxlength="40"></div><div class="form-field"><label for="seller-whatsapp">WhatsApp number</label><input id="seller-whatsapp" maxlength="40"></div><div class="form-field"><label for="business-type">Business type</label><select id="business-type"><option value="individual">Individual / creator</option><option value="registered_business">Registered business</option></select></div><div class="form-field"><label for="seller-city">City *</label><input id="seller-city" required maxlength="80"></div><div class="form-field"><label for="seller-state">State *</label><input id="seller-state" required maxlength="80" placeholder="Lagos"></div><div class="form-field"><label for="seller-bank">Settlement bank</label><input id="seller-bank" maxlength="120" placeholder="Bank name"></div><div class="form-field"><label for="seller-bank-code">Bank code</label><input id="seller-bank-code" maxlength="20"></div><div class="form-field"><label for="seller-account">Account number</label><input id="seller-account" inputmode="numeric" maxlength="20"></div><div class="form-field"><label for="seller-account-name">Account name</label><input id="seller-account-name" maxlength="120"></div><p class="form-error span-2" id="seller-error" role="alert"></p><button class="button button-primary full-button span-2" type="submit">Submit seller application <span>→</span></button></form><div class="modal-footnote">Bank details are used for marketplace settlement records. Payouts are reviewed and recorded by marketplace administration.</div></section></div>
+
+  <div class="modal-backdrop" id="product-modal" hidden><section class="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="product-title"><button class="close-button modal-close" data-close="product-modal" aria-label="Close">×</button><div class="modal-kicker">SELLER STUDIO</div><h2 id="product-title">Add a product.</h2><p class="modal-intro">Create a product listing. New and edited listings are sent for marketplace review.</p><form id="product-form" class="form-grid"><input id="product-id" type="hidden"><div class="form-field span-2"><label for="product-name">Product name *</label><input id="product-name" required minlength="3" maxlength="180"></div><div class="form-field"><label for="product-category">Category *</label><select id="product-category" required></select></div><div class="form-field"><label for="product-type">Product type</label><select id="product-type"><option value="physical">Physical product</option><option value="digital">Digital product</option></select></div><div class="form-field"><label for="product-price">Selling price (₦) *</label><input id="product-price" type="number" min="1" step="1" required inputmode="decimal"></div><div class="form-field"><label for="product-compare">Previous price (₦)</label><input id="product-compare" type="number" min="1" step="1"></div><div class="form-field" id="product-stock-wrap"><label for="product-stock">Available quantity *</label><input id="product-stock" type="number" min="1" step="1" value="1"></div><div class="form-field"><label for="product-sku">SKU / product code</label><input id="product-sku" maxlength="80"></div><div class="form-field span-2"><label for="product-image-file">Upload product photo</label><input id="product-image-file" type="file" accept="image/jpeg,image/png,image/webp,image/avif"><small>JPG, PNG, WebP or AVIF · Maximum 2.5 MB. Product photos are stored in ETHAN MARKET media storage.</small><div class="upload-state" id="image-upload-state" aria-live="polite"></div></div><div class="form-field span-2"><label for="product-image">Or paste a public image URL (HTTPS)</label><input id="product-image" type="url" placeholder="https://…"></div><div class="form-field span-2"><label for="product-description">Description *</label><textarea id="product-description" rows="4" minlength="10" maxlength="5000" required placeholder="Describe the features, benefits, size, format or condition…"></textarea></div><div class="form-field span-2" id="digital-url-wrap" hidden><label for="digital-url">Digital delivery URL</label><input id="digital-url" type="url" placeholder="https://…"><small>Only share a delivery link intended for customers after purchase.</small></div><p class="form-error span-2" id="product-error" role="alert"></p><button class="button button-primary full-button span-2" type="submit">Submit product for review <span>→</span></button></form></section></div>
+
+  <div class="modal-backdrop" id="checkout-modal" hidden><section class="modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title"><button class="close-button modal-close" data-close="checkout-modal" aria-label="Close">×</button><div class="modal-kicker">SECURE CHECKOUT</div><h2 id="checkout-title">Where should we send it?</h2><p class="modal-intro">Physical orders require a delivery address. Digital products are delivered after payment confirmation.</p><form id="checkout-form" class="form-grid"><div class="form-field"><label for="checkout-recipient">Recipient name *</label><input id="checkout-recipient" required autocomplete="name"></div><div class="form-field"><label for="checkout-phone">Phone number *</label><input id="checkout-phone" required autocomplete="tel"></div><div class="form-field span-2"><label for="checkout-address">Street address *</label><input id="checkout-address" required autocomplete="street-address"></div><div class="form-field"><label for="checkout-city">City *</label><input id="checkout-city" required autocomplete="address-level2"></div><div class="form-field"><label for="checkout-state">State *</label><input id="checkout-state" required autocomplete="address-level1"></div><div class="form-field"><label for="checkout-postal">Postal code</label><input id="checkout-postal" autocomplete="postal-code"></div><div class="form-field span-2"><label for="checkout-note">Delivery note (optional)</label><textarea id="checkout-note" rows="2" maxlength="1000"></textarea></div><div class="checkout-total span-2"><span>Estimated total</span><b id="checkout-total">₦0</b></div><p class="form-error span-2" id="checkout-error" role="alert"></p><button class="button button-primary full-button span-2" type="submit">Continue to Paystack <span>→</span></button></form><div class="modal-footnote">Your card or bank details are entered securely on Paystack. ETHAN MARKET does not store card details.</div></section></div>
+
+  <div class="modal-backdrop" id="dashboard-modal" hidden><section class="modal dashboard-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-title"><button class="close-button modal-close" data-close="dashboard-modal" aria-label="Close">×</button><div class="dashboard-head"><div><div class="modal-kicker">ETHAN MARKET ACCOUNT</div><h2 id="dashboard-title">Your dashboard.</h2></div><button class="button button-outline button-small" id="logout-button">Sign out</button></div><div class="dashboard-tabs" id="dashboard-tabs"></div><div id="dashboard-content" class="dashboard-content"><div class="dashboard-loading">Loading your workspace…</div></div></section></div>
+
+  <div class="modal-backdrop" id="detail-modal" hidden><section class="modal detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-name"><button class="close-button modal-close" data-close="detail-modal" aria-label="Close">×</button><div id="detail-content"></div></section></div>
+
+  <script src="/app.js?v=20261114-market-v1.1"></script>
+</body>
+</html>

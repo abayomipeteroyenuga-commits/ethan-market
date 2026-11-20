@@ -1,0 +1,11 @@
+{
+  "name": "ethan-market",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ETHAN MARKET multi-vendor marketplace for physical and digital products",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@vercel/blob": "^2.9.0",
+    "pg": "^8.23.1"
+  }
+}
