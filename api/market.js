@@ -1143,6 +1143,26 @@ async function updateSellerInventory(db,req,body) {
   return {product:result.rows[0]};
 }
 
+async function updateSellerVariantInventory(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const seller=await getSellerByUser(db,user.id,true);
+  const id=text(body.variant_id,80),stock=Number(body.stock_qty);
+  if(!id||!Number.isInteger(stock)||stock<0||stock>1000000) throw new HttpError(400,'Enter a whole-number variation stock quantity from 0 to 1,000,000.');
+  const {rows}=await db.query(`UPDATE market_product_variants SET stock_qty=$3,updated_at=now()
+    WHERE id=$1 AND seller_id=$2 AND is_active=true RETURNING id,product_id,label,stock_qty`,[id,seller.id,stock]);
+  if(!rows.length) throw new HttpError(404,'This product variation was not found in your store.');
+  const total=await db.query('SELECT COALESCE(SUM(stock_qty),0)::int AS stock_qty FROM market_product_variants WHERE product_id=$1 AND seller_id=$2 AND is_active=true',[rows[0].product_id,seller.id]);
+  await db.query('UPDATE market_products SET stock_qty=$2,updated_at=now() WHERE id=$1 AND seller_id=$3',[rows[0].product_id,total.rows[0].stock_qty,seller.id]);
+  await audit(db,user.id,'PRODUCT_VARIANT_STOCK_UPDATED','product_variant',id,{stock_qty:stock});
+  if(stock<=5) await createNotification(db,user.id,{
+    type:'inventory_low',title:stock===0?'Product option is out of stock':'Low option stock reminder',
+    message:rows[0].label+' has '+stock+' item(s) left. Review this option’s inventory.',
+    target_tab:'products',dedupe_key:'seller-variant-stock-alert:'+id+':'+new Date().toISOString().slice(0,10),
+    metadata:{product_id:rows[0].product_id,variant_id:id,variant_label:rows[0].label,stock_qty:stock}
+  });
+  return {variant:rows[0],product_stock_qty:total.rows[0].stock_qty};
+}
+
 async function bulkSaveProducts(db,req,body) {
   const user=await requireRole(req,db,['seller','admin','super_admin']);
   await getSellerByUser(db,user.id,true);
@@ -2038,6 +2058,7 @@ async function handle(db,req,res,body) {
   if(action==='seller.profile') return saveSellerProfile(db,req,body);
   if(action==='seller.product.save') return saveProduct(db,req,body);
   if(action==='seller.inventory.update') return updateSellerInventory(db,req,body);
+  if(action==='seller.variant-stock.update') return updateSellerVariantInventory(db,req,body);
   if(action==='seller.products.bulk') return bulkSaveProducts(db,req,body);
   if(action==='seller.fulfill') return sellerFulfill(db,req,body);
   if(action==='buyer.orders') return buyerOrders(db,req);
