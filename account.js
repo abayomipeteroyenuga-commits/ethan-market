@@ -82,12 +82,13 @@
     button.disabled = true;
     button.textContent = 'Signing in…';
     try {
-      await api('auth.login', {
+      const result = await api('auth.login', {
         email: $('login-email').value.trim(),
         password: $('login-password').value
       });
       showMessage('login-success', 'Sign-in successful. Opening your marketplace account…');
-      window.location.assign('/');
+      const destination = result.user && ['admin','super_admin'].includes(result.user.role) ? '/?dashboard=admin' : '/';
+      window.location.assign(destination);
     } catch (error) {
       showMessage('login-error', error.message);
     } finally {
@@ -123,9 +124,10 @@
     };
     if (!$('owner-token-wrap').hidden) payload.owner_token = $('owner-token').value.trim();
     try {
-      await api('auth.register', payload);
+      const result = await api('auth.register', payload);
       showMessage('register-success', 'Your account has been created. Opening ETHAN MARKET…');
-      window.location.assign('/');
+      const destination = result.user && ['admin','super_admin'].includes(result.user.role) ? '/?dashboard=admin' : '/';
+      window.location.assign(destination);
     } catch (error) {
       showMessage('register-error', error.message);
     } finally {
