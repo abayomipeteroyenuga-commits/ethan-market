@@ -1,6 +1,6 @@
 # ETHAN MARKET
 
-ETHAN MARKET is a multi-vendor marketplace for physical and digital products, powered by Ethan Digital Academy. It has a public storefront, buyer accounts, seller onboarding and store pages, a seller workspace, a marketplace administration dashboard, order tracking, product moderation, a wishlist, reviews, image uploads, and Paystack integration.
+ETHAN MARKET is a multi-vendor marketplace for physical and digital products, powered by Ethan Digital Academy. It has a public storefront, buyer accounts, seller onboarding and store pages, a seller workspace, a marketplace administration dashboard, order tracking, product moderation, a wishlist, reviews, image uploads, and Monnify integration.
 
 ## Stack
 
@@ -8,7 +8,7 @@ ETHAN MARKET is a multi-vendor marketplace for physical and digital products, po
 - API: Vercel Functions (Node.js 22+)
 - Database: PostgreSQL 17 on a dedicated Neon project
 - Public product images: Vercel Blob
-- Payments: Paystack initialize, server-side verification and signed webhooks
+- Payments: Monnify hosted checkout, server-side transaction verification and signed webhooks
 - Currency: NGN; monetary values are stored as integer kobo
 
 ## Main routes
@@ -35,7 +35,7 @@ The marketplace's configured seller commission is the primary current platform r
 - Search, category/type filters, sort, product details and seller storefronts
 - Persistent shopping bag and wishlist
 - Buyer registration/login and order history
-- Paystack checkout (once merchant keys are configured)
+- Monnify hosted checkout (once merchant credentials and contract code are configured)
 - Server-side payment verification and webhook fulfilment
 - Digital delivery links are shown only in paid order history; physical order tracking is shown in the same area
 - Buyer receipt confirmation and per-item dispute opening
@@ -78,13 +78,15 @@ The admin dashboard includes a Growth workspace for acquisition campaigns, promo
 
 ## Payment behaviour
 
-The backend initializes Paystack transactions server-side. It verifies the transaction status, exact amount, currency and reference before setting an order to paid. Webhook events are validated against the raw request body and the current timestamped Paystack signature format, with legacy signature support. Fulfilment and payout-ledger creation are idempotent.
+New ETHAN MARKET orders use Monnify hosted checkout. The backend authenticates with the Monnify API using server-side credentials, creates a transaction with a unique payment reference, and redirects the buyer to Monnify's secure checkout page. A browser redirect alone never marks an order as paid: ETHAN MARKET queries Monnify server-to-server and checks the exact payment reference, NGN currency, paid status and amount received before it changes the order to paid.
+
+Monnify transaction-completion webhooks are checked using the Monnify signature in production, and the transaction is then independently verified against Monnify before fulfilment. Finalisation is idempotent, so repeat notifications cannot deduct stock or create seller payout records twice. Legacy Paystack verification remains only for historical orders created before the Monnify migration.
 
 Seller transfers are **not automatically initiated** by this release. The dashboard provides an internal payable ledger. Physical-item payouts remain ineligible until the buyer confirms receipt; digital-item payouts receive the configured protection period (default 7 days). An open dispute changes an unpaid payout to held. After the protection period and dispute review, an administrator may approve a payout, complete the external bank/provider transfer, and record its cleared reference.
 
-This ledger is an operational control, **not escrow custody**. ETHAN MARKET must not claim that it independently holds or safeguards customer funds. Paystack split payments settle subaccount shares when the transaction settles, so they do not provide a delayed buyer-protection hold. A Nigerian merchant seeking a provider-managed manual payout arrangement must apply to Paystack and meet its registered-business, compliance and banking-partner conditions. Do not enable direct seller splits for protected orders unless an approved settlement design preserves the agreed protection period.
+This ledger is an operational control, **not escrow custody**. ETHAN MARKET must not claim that it independently holds or safeguards customer funds. Do not enable direct seller splits for protected orders unless an approved settlement design preserves the agreed protection period.
 
-Buyer-favour dispute resolutions require the administrator to complete the refund through the payment provider first and record the provider's refund reference. ETHAN MARKET records the decision; this release does not automatically issue Paystack refunds.
+Buyer-favour dispute resolutions require the administrator to complete the refund through the payment provider first and record the provider's refund reference. ETHAN MARKET records the decision; this release does not automatically issue provider refunds.
 
 ## Environment variables
 
@@ -98,10 +100,12 @@ Set these in the Vercel project environment (server-side only):
 | `MARKET_OWNER_BOOTSTRAP_TOKEN` | One-time owner activation code; remove after owner registration |
 | `MARKET_FIELD_ENCRYPTION_KEY` | 32-byte hex key for payout account fields |
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob upload token |
-| `PAYSTACK_SECRET_KEY` | Paystack test or live secret key |
-| `PAYSTACK_WEBHOOK_SECRET` | Current Paystack webhook signing secret (`whsec_...`) |
+| `MONNIFY_API_KEY` | Monnify test or live API key |
+| `MONNIFY_SECRET_KEY` | Monnify test or live secret key; also used to validate production webhooks |
+| `MONNIFY_CONTRACT_CODE` | Monnify merchant contract code |
+| `MONNIFY_BASE_URL` | `https://sandbox.monnify.com` for testing or `https://api.monnify.com` for live payments |
 
-Do not commit real secrets or put Paystack secret keys in browser code. See `.env.example` for the variable names only.
+Do not commit real secrets or expose Monnify credentials in browser code. See `.env.example` for the variable names only.
 
 ## First-time owner activation
 
@@ -110,13 +114,14 @@ Do not commit real secrets or put Paystack secret keys in browser code. See `.en
 3. Enter the one-time owner activation code provided separately by the marketplace operator.
 4. After the owner account is successfully created, remove `MARKET_OWNER_BOOTSTRAP_TOKEN` from Vercel and redeploy. The database also prevents a second owner activation.
 
-## Paystack setup before live transactions
+## Monnify setup before live transactions
 
-1. Add the Paystack **test** secret key as `PAYSTACK_SECRET_KEY` in Vercel.
-2. Add the webhook signing secret from Paystack Developer settings as `PAYSTACK_WEBHOOK_SECRET`.
-3. Register `https://market.ethandigitalacademy.org/api/market-webhook` in the Paystack dashboard.
-4. Test a physical order, a digital order, a failed payment, a repeated webhook and an order with more than one seller.
-5. Switch to the live secret and webhook keys only after test transactions and merchant settlement details are validated.
+1. Add the Monnify **test** API key as `MONNIFY_API_KEY` in the Vercel project environment.
+2. Add the matching test secret key as `MONNIFY_SECRET_KEY` and your merchant contract code as `MONNIFY_CONTRACT_CODE`.
+3. Set `MONNIFY_BASE_URL=https://sandbox.monnify.com` while testing. Keep all credentials server-side and encrypted in Vercel.
+4. In the Monnify dashboard, register `https://market.ethandigitalacademy.org/api/market-webhook` as the transaction-completion webhook URL.
+5. Test a physical order, a digital order, a failed or abandoned payment, a repeated webhook, and an order containing products from more than one seller. Confirm that inventory and seller notifications update only after Monnify confirms payment.
+6. Switch to the live API key, secret and contract code, and set `MONNIFY_BASE_URL=https://api.monnify.com` only after sandbox tests and merchant settlement details have been validated.
 
 ## DNS
 
@@ -142,7 +147,7 @@ The schema is initialized by the first successful API request using `CREATE TABL
 
 ## Release notes
 
-- `1.0.0`: multi-vendor storefront, backend API, authentication, seller/admin workflows, product images, order records and Paystack integration.
+- `1.0.0`: multi-vendor storefront, backend API, authentication, seller/admin workflows, product images, order records and Monnify integration.
 - `1.1.0`: seller storefront pages, persistent-cart hydration, buyer product reviews, admin seller payout account visibility, current Paystack timestamped webhook signature parsing, security headers and cache rotation.
 - `1.1.1`: serialize first-run database schema creation across concurrent serverless cold starts using a PostgreSQL advisory lock.
 - `1.2.0`: buyer receipt confirmation, per-item dispute management, seller responses, conditional payout eligibility and crawlable product/store SEO pages with structured data and dynamic sitemaps.
