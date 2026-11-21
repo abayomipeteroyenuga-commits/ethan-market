@@ -679,6 +679,7 @@ async function growthPromoPreview(db,req,body) {
   let subtotal=0,fee=0,physical=false;
   for(const item of items) {
     const product=productMap.get(text(item.product_id,80));
+    if(!product) throw new HttpError(400,'A product in your basket is invalid or no longer available.');
     const quantity=Math.min(20,Math.max(1,parseInt(item.quantity,10)||1));
     const variantId=text(item.variant_id,80),variant=variantId?variantMap.get(variantId):null;
     if(variantId&&(!variant||variant.product_id!==product.id)) throw new HttpError(409,'A selected product option is no longer available.');
