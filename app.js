@@ -776,7 +776,8 @@ function renderVariantRows(variants=[]) {
   updateProductType();
 }
 function collectProductVariants() {
-  return $('[data-variant-row]',$('#variant-rows')).map(row=>{
+  if($('#product-type').value==='digital')return [];
+  return $$('[data-variant-row]',$('#variant-rows')).map(row=>{
     const rawPrice=$('[data-variant-price]',row).value.trim();
     return {
       id:row.dataset.variantId||'',
@@ -822,7 +823,7 @@ function updateProductType(){
   $('#product-stock').required=!isDigital&&!hasVariants;
   $('#product-stock').disabled=isDigital||hasVariants;
   $('#variant-add').disabled=isDigital;
-  $('[data-variant-row] input',$('#variant-rows')).forEach(input=>{input.disabled=isDigital;});
+  $$('[data-variant-row] input',$('#variant-rows')).forEach(input=>{input.disabled=isDigital;});
   if(isDigital)$('#product-stock').value=0;
   else if(!hasVariants&&!Number($('#product-stock').value))$('#product-stock').value=1;
 }
