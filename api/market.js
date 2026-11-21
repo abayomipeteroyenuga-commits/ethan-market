@@ -1114,6 +1114,8 @@ async function syncProductVariants(db,sellerId,productId,variants,fallbackStock=
   const client=await db.connect();
   try{
     await client.query('BEGIN');
+    const productLock=await client.query('SELECT id FROM market_products WHERE id=$1 AND seller_id=$2 FOR UPDATE',[productId,sellerId]);
+    if(!productLock.rows.length) throw new HttpError(404,'Product was not found in your store.');
     await client.query('UPDATE market_product_variants SET is_active=false,updated_at=now() WHERE product_id=$1 AND seller_id=$2',[productId,sellerId]);
     for(const variant of cleaned){
       if(variant.id){
@@ -1158,19 +1160,32 @@ async function updateSellerVariantInventory(db,req,body) {
   const seller=await getSellerByUser(db,user.id,true);
   const id=text(body.variant_id,80),stock=Number(body.stock_qty);
   if(!id||!Number.isInteger(stock)||stock<0||stock>1000000) throw new HttpError(400,'Enter a whole-number variation stock quantity from 0 to 1,000,000.');
-  const {rows}=await db.query(`UPDATE market_product_variants SET stock_qty=$3,updated_at=now()
-    WHERE id=$1 AND seller_id=$2 AND is_active=true RETURNING id,product_id,label,stock_qty`,[id,seller.id,stock]);
-  if(!rows.length) throw new HttpError(404,'This product variation was not found in your store.');
-  const total=await db.query('SELECT COALESCE(SUM(stock_qty),0)::int AS stock_qty FROM market_product_variants WHERE product_id=$1 AND seller_id=$2 AND is_active=true',[rows[0].product_id,seller.id]);
-  await db.query('UPDATE market_products SET stock_qty=$2,updated_at=now() WHERE id=$1 AND seller_id=$3',[rows[0].product_id,total.rows[0].stock_qty,seller.id]);
+  const client=await db.connect();
+  let result;
+  try{
+    await client.query('BEGIN');
+    const target=await client.query('SELECT product_id FROM market_product_variants WHERE id=$1 AND seller_id=$2 AND is_active=true',[id,seller.id]);
+    if(!target.rows.length) throw new HttpError(404,'This product variation was not found in your store.');
+    const productId=target.rows[0].product_id;
+    const locked=await client.query('SELECT id FROM market_products WHERE id=$1 AND seller_id=$2 FOR UPDATE',[productId,seller.id]);
+    if(!locked.rows.length) throw new HttpError(404,'The product for this variation was not found in your store.');
+    const updated=await client.query(`UPDATE market_product_variants SET stock_qty=$3,updated_at=now()
+      WHERE id=$1 AND seller_id=$2 AND is_active=true RETURNING id,product_id,label,stock_qty`,[id,seller.id,stock]);
+    if(!updated.rows.length) throw new HttpError(409,'This product variation changed while inventory was being updated. Refresh and try again.');
+    const total=await client.query('SELECT COALESCE(SUM(stock_qty),0)::int AS stock_qty FROM market_product_variants WHERE product_id=$1 AND seller_id=$2 AND is_active=true',[productId,seller.id]);
+    await client.query('UPDATE market_products SET stock_qty=$2,updated_at=now() WHERE id=$1 AND seller_id=$3',[productId,total.rows[0].stock_qty,seller.id]);
+    await client.query('COMMIT');
+    result={variant:updated.rows[0],product_stock_qty:total.rows[0].stock_qty};
+  }catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
   await audit(db,user.id,'PRODUCT_VARIANT_STOCK_UPDATED','product_variant',id,{stock_qty:stock});
   if(stock<=5) await createNotification(db,user.id,{
     type:'inventory_low',title:stock===0?'Product option is out of stock':'Low option stock reminder',
-    message:rows[0].label+' has '+stock+' item(s) left. Review this option’s inventory.',
+    message:result.variant.label+' has '+stock+' item(s) left. Review this option’s inventory.',
     target_tab:'products',dedupe_key:'seller-variant-stock-alert:'+id+':'+new Date().toISOString().slice(0,10),
-    metadata:{product_id:rows[0].product_id,variant_id:id,variant_label:rows[0].label,stock_qty:stock}
+    metadata:{product_id:result.variant.product_id,variant_id:id,variant_label:result.variant.label,stock_qty:stock}
   });
-  return {variant:rows[0],product_stock_qty:total.rows[0].stock_qty};
+  return result;
 }
 
 async function bulkSaveProducts(db,req,body) {
@@ -1357,6 +1372,10 @@ async function finalizePaid(db, transaction) {
     if (!rows.length) throw new HttpError(404,'No ETHAN MARKET order matches this payment reference.');
     const order = rows[0];
     if (Number(transaction.amount) !== Number(order.total_kobo) || String(transaction.currency).toUpperCase() !== 'NGN') throw new HttpError(400,'The payment amount or currency does not match this order.');
+    const productIdsResult=await client.query(`SELECT DISTINCT product_id FROM market_order_items
+      WHERE order_id=$1 AND product_type='physical' AND product_id IS NOT NULL ORDER BY product_id`,[order.id]);
+    const productIds=productIdsResult.rows.map(row=>row.product_id);
+    if(productIds.length) await client.query('SELECT id FROM market_products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[productIds]);
     if (order.payment_status !== 'paid') {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
