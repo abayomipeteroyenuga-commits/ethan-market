@@ -1050,7 +1050,7 @@ async function saveProduct(db, req, body) {
       [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
     );
     if (!rows.length) throw new HttpError(404,'Product was not found in your store.');
-    if(variantsSupplied) await syncProductVariants(db,seller.id,productId,variants);
+    if(variantsSupplied) await syncProductVariants(db,seller.id,productId,variants,stock);
     await audit(db,user.id,'PRODUCT_UPDATED','product',productId);
     return { product: rows[0] };
   }
@@ -1060,12 +1060,12 @@ async function saveProduct(db, req, body) {
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty`,
     [seller.id,category.rows[0].id,name,slug,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
   );
-  if(variantsSupplied) await syncProductVariants(db,seller.id,rows[0].id,variants);
+  if(variantsSupplied) await syncProductVariants(db,seller.id,rows[0].id,variants,stock);
   await audit(db,user.id,'PRODUCT_SUBMITTED','product',rows[0].id);
   return { product: rows[0] };
 }
 
-async function syncProductVariants(db,sellerId,productId,variants) {
+async function syncProductVariants(db,sellerId,productId,variants,fallbackStock=0) {
   if(!Array.isArray(variants)) return null;
   if(variants.length>30) throw new HttpError(400,'A product can have up to 30 variations.');
   const cleaned=[],labels=new Set();
@@ -1096,7 +1096,7 @@ async function syncProductVariants(db,sellerId,productId,variants) {
           [productId,sellerId,variant.label,variant.sku,variant.price,variant.stock]);
       }
     }
-    const total=cleaned.reduce((sum,item)=>sum+item.stock,0);
+    const total=cleaned.length?cleaned.reduce((sum,item)=>sum+item.stock,0):Math.max(0,Number(fallbackStock)||0);
     await client.query('UPDATE market_products SET stock_qty=$3,updated_at=now() WHERE id=$1 AND seller_id=$2',[productId,sellerId,total]);
     await client.query('COMMIT');
     return {count:cleaned.length,stock_qty:total};
