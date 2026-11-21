@@ -6,7 +6,7 @@ const state = {
   user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, payments_enabled: false },
   category: 'all', filter: 'all', query: '', sort: 'featured', cart: readCart(), wishlist: new Set(),
   authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null,
-  unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null, compare: new Map()
+  unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null, compare: new Map(), activeConversationId: ''
 };
 const money = kobo => '₦' + (Number(kobo || 0) / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 });
 const nairaToKobo = value => Math.max(0, Math.round(Number(value || 0) * 100));
@@ -270,7 +270,9 @@ async function showProduct(productId) {
     const selectedStock=selected?Number(selected.stock_qty):Number(p.stock_qty||0);
     const picker=variants.length?`<div class="form-field detail-variant-picker"><label for="detail-variant-select">Choose size, colour or model *</label><select id="detail-variant-select" data-detail-variant>${variants.map(v=>`<option value="${escAttr(v.id)}" ${selected?.id===v.id?'selected':''} ${Number(v.stock_qty)>0?'':'disabled'}>${html(v.label)}${v.sku?' · '+html(v.sku):''} · ${Number(v.stock_qty)>0?Number(v.stock_qty)+' available':'Out of stock'}</option>`).join('')}</select><small id="detail-variant-stock" aria-live="polite">${selectedStock>0?selectedStock+' available':'This option is out of stock'}</small></div>`:'';
     const outOfStock=p.product_type==='physical'&&selectedStock<1;
-    $('#detail-content').innerHTML=`<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug||'')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price" id="detail-price">${money(selectedPrice)}</div>${picker}<div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span id="detail-availability">${selectedStock>0?'In stock':'Out of stock'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${outOfStock?'disabled':''}>${outOfStock?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
+    const qaItems=(p.questions||[]).map(q=>`<article class="qa-item"><p>${html(q.question)}</p><small>Asked by ${html(q.asker_name||'Marketplace shopper')} · ${formatDate(q.created_at)}</small>${q.status==='answered'?`<div class="qa-answer"><strong>Seller response</strong><p>${html(q.answer)}</p><small>${q.answered_at?formatDate(q.answered_at):''}</small></div>`:'<span class="qa-pending">Awaiting seller response</span>'}</article>`).join('');
+    const questionPanel=`<section class="product-community"><div class="eyebrow">CUSTOMER QUESTIONS</div><h3>Questions & answers</h3><p class="modal-intro">Ask the seller about this product. Answers appear publicly on the listing.</p><div class="qa-list">${qaItems||'<div class="dash-empty">No questions yet. Be the first to ask.</div>'}</div><form id="product-question-form" data-product-question="${escAttr(p.id)}"><label for="product-question-input">Your question</label><textarea id="product-question-input" rows="3" maxlength="1000" placeholder="Ask about size, availability, delivery or product details..." required></textarea><button class="dash-action primary" type="submit">Submit question</button><small class="qa-hint">You must be signed in. Do not include personal or payment details.</small></form></section>`;
+    $('#detail-content').innerHTML=`<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug||'')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price" id="detail-price">${money(selectedPrice)}</div>${picker}<div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span id="detail-availability">${selectedStock>0?'In stock':'Out of stock'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${outOfStock?'disabled':''}>${outOfStock?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button><button class="button button-outline" data-message-product="${escAttr(p.id)}">Message seller</button></div></div></div>${questionPanel}`;
     showModal('detail-modal');
   } catch(e) { notify(e.message); }
 }
@@ -311,7 +313,7 @@ function openDashboard(tab) {
   const role = state.user.role;
   const tabs = role === 'super_admin' || role === 'admin' ? [
     ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Growth'],['notifications','Notifications'],['settings','Settings']
-  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Grow & refer'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['growth','Grow & refer'],['notifications','Notifications'],['sell','Become a seller']];
+  ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['questions','Product Q&A'],['messages','Messages'],['disputes','Disputes'],['payouts','Payouts'],['growth','Grow & refer'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['messages','Messages'],['wishlist','Wishlist'],['growth','Grow & refer'],['notifications','Notifications'],['sell','Become a seller']];
   state.dashboardTabs = tabs;
   state.dashboardTab = tab || tabs[0][0];
   $('#dashboard-title').textContent = role === 'super_admin' || role === 'admin' ? 'Marketplace control.' : role === 'seller' ? 'Seller studio.' : 'Your account.';
@@ -335,11 +337,60 @@ function renderDashboardTabs() {
   }
   updateNotificationBadge();
 }
+function renderMessageInbox(data) {
+  const threads=Array.isArray(data.threads)?data.threads:[];
+  const unread=threads.reduce((sum,t)=>sum+Number(t.unread_count||0),0);
+  const el=$('#dashboard-content');
+  el.innerHTML=`<div class="dash-panel message-inbox"><div class="message-inbox-head"><div><h3>Your messages</h3><p class="modal-intro">${unread} unread · Chat directly with buyers and sellers about listings or paid orders.</p></div></div>
+    <div class="message-layout"><div class="message-thread-list">${threads.map(t=>`<button class="message-thread-preview ${state.activeConversationId===t.id?'active':''}" data-message-open="${escAttr(t.id)}"><span class="message-preview-top"><strong>${html(t.other_name||'Marketplace member')}</strong>${Number(t.unread_count||0)?`<b>${Number(t.unread_count)}</b>`:''}</span><small>${html(t.context_title||'ETHAN MARKET')}</small><span>${html(t.last_message||'Start the conversation')}</span><time>${t.last_message_at?formatDate(t.last_message_at):formatDate(t.updated_at)}</time></button>`).join('')||'<div class="dash-empty">No conversations yet. Open a product and choose “Message seller” to start one.</div>'}</div><section id="message-thread-panel" class="message-thread-panel"><div class="dash-empty">Choose a conversation to read and reply.</div></section></div></div>`;
+}
+
+function renderMessageThread(data) {
+  const panel=$('#message-thread-panel');
+  if(!panel) return;
+  const c=data.conversation,messages=data.messages||[];
+  panel.innerHTML=`<div class="message-thread-heading"><div><strong>${html(c.other_name||'Marketplace member')}</strong><small>${html(c.context_title||'ETHAN MARKET')} ${c.order_number?'· Order '+html(c.order_number):''}</small></div><button class="dash-action" data-message-back>Inbox</button></div>
+    <div class="message-history">${messages.map(m=>`<article class="message-bubble ${m.sender_id===state.user.id?'mine':'theirs'}"><p>${html(m.body)}</p><time>${formatDate(m.created_at)}</time></article>`).join('')||'<div class="dash-empty">Send the first message in this conversation.</div>'}</div>
+    <form id="message-compose-form" class="message-compose-form"><textarea id="message-composer" rows="2" maxlength="2000" placeholder="Write a message..." required></textarea><button class="dash-action primary" type="submit">Send message</button></form>`;
+  const history=panel.querySelector('.message-history');
+  if(history) history.scrollTop=history.scrollHeight;
+}
+
+async function openMessageThread(id) {
+  const data=await api('messages.thread',{conversation_id:id});
+  renderMessageThread(data);
+}
+
+async function startProductConversation(productId) {
+  if(!state.user) { openAuth('login','Sign in to message this seller.'); return; }
+  try {
+    const data=await api('messages.open',{product_id:productId});
+    state.activeConversationId=data.conversation_id;
+    closeModal('detail-modal');
+    openDashboard('messages');
+  } catch(error) { notify(error.message); }
+}
+
+async function startOrderConversation(itemId) {
+  if(!state.user) { openAuth('login','Sign in to contact the seller about this order.'); return; }
+  try {
+    const data=await api('messages.open',{order_item_id:itemId});
+    state.activeConversationId=data.conversation_id;
+    openDashboard('messages');
+  } catch(error) { notify(error.message); }
+}
+
 async function loadDashboardTab() {
   renderDashboardTabs();
   const el = $('#dashboard-content'); el.innerHTML = '<div class="dashboard-loading">Loading your workspace…</div>';
   const tab = state.dashboardTab;
   try {
+    if(tab==='messages') {
+      const data=await api('messages.threads');
+      renderMessageInbox(data);
+      if(state.activeConversationId) await openMessageThread(state.activeConversationId);
+      return;
+    }
     if(tab==='notifications') {
       const data=await api('notifications.list');
       state.unreadNotifications=Number(data.unread_count||0);
@@ -721,9 +772,12 @@ function renderSellerTab(tab,data) {
   } else if(tab==='products') {
     el.innerHTML=renderSellerProductsPanel(data);
   } else if(tab==='orders') {
-    el.innerHTML=`<div class="dash-panel"><h3>Customer orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Customer</th><th>Quantity</th><th>Delivery</th><th>Update</th></tr></thead><tbody>${(data.orders||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong><br>${html(o.product_name)}${o.variant_label?' · '+html(o.variant_label):''}<br><small>${formatDate(o.created_at)}</small></td><td>${html(o.recipient_name)}<br>${html(o.phone)}<br><small>${html([o.shipping_address?.line1,o.shipping_address?.city,o.shipping_address?.state].filter(Boolean).join(', '))}</small></td><td>${o.quantity}</td><td>${statusPill(o.fulfillment_status)}${o.tracking_number?`<br><small>${html(o.tracking_carrier)} ${html(o.tracking_number)}</small>`:''}</td><td><div class="dash-actions"><button class="dash-action" data-fulfill="${o.id}" data-status="processing">Processing</button><button class="dash-action primary" data-fulfill="${o.id}" data-status="dispatched">Dispatch / add tracking</button></div><small>Buyer confirms receipt in their order history.</small></td></tr>`).join('')||tableEmpty('No paid orders yet.',5)}</tbody></table></div></div>`;
+    el.innerHTML=`<div class="dash-panel"><h3>Customer orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Customer</th><th>Quantity</th><th>Delivery</th><th>Update</th></tr></thead><tbody>${(data.orders||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong><br>${html(o.product_name)}${o.variant_label?' · '+html(o.variant_label):''}<br><small>${formatDate(o.created_at)}</small></td><td>${html(o.recipient_name)}<br>${html(o.phone)}<br><small>${html([o.shipping_address?.line1,o.shipping_address?.city,o.shipping_address?.state].filter(Boolean).join(', '))}</small></td><td>${o.quantity}</td><td>${statusPill(o.fulfillment_status)}${o.tracking_number?`<br><small>${html(o.tracking_carrier)} ${html(o.tracking_number)}</small>`:''}</td><td><div class="dash-actions"><button class="dash-action" data-fulfill="${o.id}" data-status="processing">Processing</button><button class="dash-action primary" data-fulfill="${o.id}" data-status="dispatched">Dispatch / add tracking</button><button class="dash-action" data-message-order="${o.id}">Message buyer</button></div><small>Buyer confirms receipt in their order history.</small></td></tr>`).join('')||tableEmpty('No paid orders yet.',5)}</tbody></table></div></div>`;
+  } else if(tab==='questions') {
+    const questions=data.questions||[];
+    el.innerHTML=`<div class="dash-panel"><h3>Product questions</h3><p class="modal-intro">Answer customer questions about products in your store. Your replies become visible on the public product listing.</p><div class="qa-seller-list">${questions.map(q=>`<article class="qa-seller-item"><div><strong>${html(q.product_name)}</strong><span class="status-pill ${q.status==='answered'?'approved':'pending'}">${html(textStatus(q.status))}</span></div><p>${html(q.question)}</p><small>Asked by ${html(q.asker_name||'Customer')} · ${formatDate(q.created_at)}</small>${q.status==='open'?`<button class="dash-action primary" data-answer-question="${escAttr(q.id)}">Answer question</button>`:`<div class="qa-answer"><strong>Your answer</strong><p>${html(q.answer)}</p></div>`}</article>`).join('')||'<div class="dash-empty">No customer questions yet. New questions will appear here.</div>'}</div></div>`;
   } else if(tab==='disputes') {
-    el.innerHTML=`<div class="dash-panel"><h3>Buyer disputes</h3><p class="modal-intro">Respond promptly with dispatch details, proof of delivery or digital-access evidence.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / product</th><th>Buyer issue</th><th>Your response</th><th>Status</th></tr></thead><tbody>${(data.disputes||[]).map(d=>`<tr><td><strong>${html(d.order_number)}</strong><br>${html(d.product_name)}</td><td>${html(textStatus(d.reason))}<br><small>${html(d.details)}</small></td><td>${html(d.seller_response||'No response yet')}${['open','under_review'].includes(d.status)?`<br><button class="dash-action primary" data-respond-dispute="${d.id}">Respond to case</button>`:''}</td><td>${statusPill(d.status)}<br><small>${html(d.resolution_notes||'')}</small></td></tr>`).join('')||tableEmpty('No buyer disputes against your store.',4)}</tbody></table></div></div>`;
+    el.innerHTML=`<div class="dash-panel"><h3>Buyer disputes</h3>`<p class="modal-intro">Respond promptly with dispatch details, proof of delivery or digital-access evidence.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / product</th><th>Buyer issue</th><th>Your response</th><th>Status</th></tr></thead><tbody>${(data.disputes||[]).map(d=>`<tr><td><strong>${html(d.order_number)}</strong><br>${html(d.product_name)}</td><td>${html(textStatus(d.reason))}<br><small>${html(d.details)}</small></td><td>${html(d.seller_response||'No response yet')}${['open','under_review'].includes(d.status)?`<br><button class="dash-action primary" data-respond-dispute="${d.id}">Respond to case</button>`:''}</td><td>${statusPill(d.status)}<br><small>${html(d.resolution_notes||'')}</small></td></tr>`).join('')||tableEmpty('No buyer disputes against your store.',4)}</tbody></table></div></div>`;
   } else if(tab==='payouts') {
     el.innerHTML=`<div class="dash-panel"><h3>Settlement summary</h3><div class="metric-grid">${renderMetric('Pending',money(data.totals?.outstanding))}${renderMetric('Paid',money(data.totals?.paid))}${renderMetric('Total net earnings',money(data.totals?.net_total))}</div><p class="modal-intro">Payouts are protected until buyer receipt confirmation (physical items) or the digital-product protection period ends. Marketplace administration then approves and records the bank transfer.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Created</th><th>Gross</th><th>Commission</th><th>Net</th><th>Protection / status</th><th>Reference</th></tr></thead><tbody>${(data.payouts||[]).map(p=>`<tr><td>${formatDate(p.created_at)}</td><td>${money(p.gross_kobo)}</td><td>${money(p.commission_kobo)}</td><td>${money(p.net_kobo)}</td><td>${statusPill(p.status)}<br><small>${p.eligible_at?'Eligible: '+formatDate(p.eligible_at):'Awaiting buyer receipt confirmation'}</small><br><small>${html(p.hold_reason||'')}</small></td><td>${html(p.payout_reference||'—')}</td></tr>`).join('')||tableEmpty('No payout entries yet.',6)}</tbody></table></div></div>`;
   }
@@ -733,7 +787,7 @@ function renderStoreSettings() {
   $('#dashboard-content').innerHTML=`<div class="dash-panel"><h3>Store profile and settlement details</h3><form id="store-settings-form" class="dash-form"><div class="form-field full"><label>Store name</label><input value="${escAttr(s.store_name||'')}" disabled></div><div class="form-field full"><label for="profile-description">Store description</label><textarea id="profile-description" rows="3">${html(s.description||'')}</textarea></div><div class="form-field"><label for="profile-phone">Business phone</label><input id="profile-phone" value="${escAttr(s.phone||'')}"></div><div class="form-field"><label for="profile-whatsapp">WhatsApp</label><input id="profile-whatsapp" value="${escAttr(s.whatsapp||'')}"></div><div class="form-field"><label for="profile-city">City</label><input id="profile-city" value="${escAttr(s.city||'')}"></div><div class="form-field"><label for="profile-state">State</label><input id="profile-state" value="${escAttr(s.state||'')}"></div><div class="form-field"><label for="profile-bank">Bank name</label><input id="profile-bank" value="${escAttr(s.bank_name||'')}"></div><div class="form-field"><label for="profile-bank-code">Bank code</label><input id="profile-bank-code" value="${escAttr(s.bank_code||'')}"></div><div class="form-field"><label for="profile-account">Account number</label><input id="profile-account" value="${escAttr(s.account_number||'')}"></div><div class="form-field"><label for="profile-account-name">Account name</label><input id="profile-account-name" value="${escAttr(s.account_name||'')}"></div><p class="form-error" id="store-settings-error"></p><button class="button button-primary" type="submit">Save changes</button></form></div>`;
 }
 function renderBuyerOrders(orders) {
-  $('#dashboard-content').innerHTML=`<div class="dash-panel"><h3>Your purchases and order protection</h3><p class="modal-intro">Check tracking, confirm receipt when an item arrives, or open a case if there is a problem. A reported issue blocks an unpaid seller payout while it is reviewed.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order</th><th>Items / protection</th><th>Total</th><th>Payment</th><th>Order status</th><th>Date</th></tr></thead><tbody>${orders.map(o=>`<tr><td><strong>${html(o.order_number)}</strong></td><td>${(o.items||[]).map(i=>{const activeCase=['open','under_review'].includes(i.dispute_status);return `<strong>${html(i.product_name)}${i.variant_label?' · '+html(i.variant_label):''} × ${i.quantity}</strong>${i.download_url?`<br><a href="${escAttr(i.download_url)}" target="_blank" rel="noopener">Download digital item</a>`:''}${i.tracking_number?`<br><small>Tracking: ${html(i.tracking_carrier)} ${html(i.tracking_number)}</small>`:''}<br><small>Fulfilment: ${html(textStatus(i.fulfillment_status))} · Payout: ${html(textStatus(i.payout_status||'pending'))}</small>${i.buyer_confirmed_at?`<br><small>Receipt confirmed · Protection date: ${i.payout_eligible_at?formatDate(i.payout_eligible_at):'pending'}</small>`:''}${activeCase?`<br><small>Case ${html(i.dispute_status)}: ${html(textStatus(i.dispute_reason))}</small>`:''}${o.payment_status==='paid'&&i.product_type==='physical'&&!i.buyer_confirmed_at&&!activeCase&&['dispatched','delivered'].includes(i.fulfillment_status)?`<br><button class="dash-action primary" data-confirm-delivery="${escAttr(i.id)}">Confirm I received it</button>`:''}${o.payment_status==='paid'&&!i.dispute_id?`<br><button class="dash-action danger" data-open-dispute="${escAttr(i.id)}">Report a problem</button>`:''}${i.dispute_id&&!activeCase?`<br><small>Case closed: ${html(i.dispute_status)}</small>`:''}${i.fulfillment_status==='delivered'?`<br><button class="dash-action" data-review="${escAttr(i.product_id||'')}" data-order="${escAttr(o.id)}">Review item</button>`:''}`;}).join('<hr>')}</td><td>${money(o.total_kobo)}</td><td>${statusPill(o.payment_status)}</td><td>${statusPill(o.status)}</td><td>${formatDate(o.created_at)}</td></tr>`).join('')||tableEmpty('Your orders will appear here after checkout.',6)}</tbody></table></div></div>`;
+  $('#dashboard-content').innerHTML=`<div class="dash-panel"><h3>Your purchases and order protection</h3><p class="modal-intro">Check tracking, confirm receipt when an item arrives, or open a case if there is a problem. A reported issue blocks an unpaid seller payout while it is reviewed.</p><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order</th><th>Items / protection</th><th>Total</th><th>Payment</th><th>Order status</th><th>Date</th></tr></thead><tbody>${orders.map(o=>`<tr><td><strong>${html(o.order_number)}</strong></td><td>${(o.items||[]).map(i=>{const activeCase=['open','under_review'].includes(i.dispute_status);return `<strong>${html(i.product_name)}${i.variant_label?' · '+html(i.variant_label):''} × ${i.quantity}</strong>${i.download_url?`<br><a href="${escAttr(i.download_url)}" target="_blank" rel="noopener">Download digital item</a>`:''}${i.tracking_number?`<br><small>Tracking: ${html(i.tracking_carrier)} ${html(i.tracking_number)}</small>`:''}<br><small>Fulfilment: ${html(textStatus(i.fulfillment_status))} · Payout: ${html(textStatus(i.payout_status||'pending'))}</small>${(i.tracking_events||[]).length?`<div class="tracking-timeline">${i.tracking_events.map(ev=>`<div><b>${html(textStatus(ev.status))}</b><small>${formatDate(ev.created_at)} · ${html(ev.note||'')}</small></div>`).join('')}</div>`:''}${i.buyer_confirmed_at?`<br><small>Receipt confirmed · Protection date: ${i.payout_eligible_at?formatDate(i.payout_eligible_at):'pending'}</small>`:''}${activeCase?`<br><small>Case ${html(i.dispute_status)}: ${html(textStatus(i.dispute_reason))}</small>`:''}${o.payment_status==='paid'&&i.product_type==='physical'&&!i.buyer_confirmed_at&&!activeCase&&['dispatched','delivered'].includes(i.fulfillment_status)?`<br><button class="dash-action primary" data-confirm-delivery="${escAttr(i.id)}">Confirm I received it</button>`:''}${o.payment_status==='paid'?`<br><button class="dash-action" data-message-order="${escAttr(i.id)}">Message seller</button>`:''}${o.payment_status==='paid'&&!i.dispute_id?`<br><button class="dash-action danger" data-open-dispute="${escAttr(i.id)}">Report a problem</button>`:''}${i.dispute_id&&!activeCase?`<br><small>Case closed: ${html(i.dispute_status)}</small>`:''}${i.fulfillment_status==='delivered'?`<br><button class="dash-action" data-review="${escAttr(i.product_id||'')}" data-order="${escAttr(o.id)}">Review item</button>`:''}`;}).join('<hr>')}</td><td>${money(o.total_kobo)}</td><td>${statusPill(o.payment_status)}</td><td>${statusPill(o.status)}</td><td>${formatDate(o.created_at)}</td></tr>`).join('')||tableEmpty('Your orders will appear here after checkout.',6)}</tbody></table></div></div>`;
 }
 function renderBuyerWishlist(products) {
   $('#dashboard-content').innerHTML=`<div class="dash-panel"><h3>Your wishlist</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Store</th><th>Price</th><th></th></tr></thead><tbody>${products.map(p=>`<tr><td><strong>${html(p.name)}</strong></td><td>${html(p.store_name)}</td><td>${money(p.price_kobo)}</td><td><button class="dash-action" data-add="${p.id}">Add to bag</button></td></tr>`).join('')||tableEmpty('No saved products yet.',4)}</tbody></table></div></div>`;
@@ -1076,6 +1130,17 @@ async function sellerFulfillAction(el){
   catch(e){notify(e.message);el.disabled=false;}
 }
 
+document.addEventListener('submit',async e=>{
+  if(e.target.id!=='product-question-form') return;
+  e.preventDefault();
+  if(!state.user){openAuth('login','Sign in to ask the seller a question.');return;}
+  const productId=e.target.dataset.productQuestion,question=$('#product-question-input')?.value.trim()||'';
+  if(question.length<10){notify('Write a question of at least 10 characters.');return;}
+  const submit=e.target.querySelector('button[type="submit"]');if(submit)submit.disabled=true;
+  try{await api('questions.ask',{product_id:productId,question});notify('Your question has been sent to the seller.');await showProduct(productId);}
+  catch(error){notify(error.message);if(submit)submit.disabled=false;}
+});
+
 // Global interaction handling uses delegation so freshly-rendered dashboard rows remain active.
 document.addEventListener('click',async e=>{
   const close=e.target.closest('[data-close]');if(close){closeModal(close.dataset.close);return;}
@@ -1084,6 +1149,11 @@ document.addEventListener('click',async e=>{
   const compare=e.target.closest('[data-compare]');if(compare){toggleProductCompare(compare.dataset.compare);return;}
   if(e.target.closest('#open-compare')){showProductComparison();return;}
   if(e.target.closest('#clear-compare')){state.compare.clear();renderProducts();return;}
+  const productMessage=e.target.closest('[data-message-product]');if(productMessage){startProductConversation(productMessage.dataset.messageProduct);return;}
+  const orderMessage=e.target.closest('[data-message-order]');if(orderMessage){startOrderConversation(orderMessage.dataset.messageOrder);return;}
+  const messageOpen=e.target.closest('[data-message-open]');if(messageOpen){state.activeConversationId=messageOpen.dataset.messageOpen;openMessageThread(state.activeConversationId).catch(err=>notify(err.message));return;}
+  if(e.target.closest('[data-message-back]')){state.activeConversationId='';loadDashboardTab();return;}
+  const answerQuestion=e.target.closest('[data-answer-question]');if(answerQuestion){const answer=prompt('Write your answer to this customer question:');if(answer&&answer.trim()){try{await api('questions.answer',{question_id:answerQuestion.dataset.answerQuestion,answer});notify('Your product answer is now published.');loadDashboardTab();}catch(error){notify(error.message);}}return;}
   if(e.target.closest('#bulk-import-trigger')){$('#bulk-product-file').click();return;}
   if(e.target.closest('#bulk-import-template')){downloadBulkProductTemplate();return;}
   const variantStockSave=e.target.closest('[data-save-variant-stock]');
@@ -1192,6 +1262,11 @@ $('#product-image-clear').addEventListener('click',()=>{
 $('#checkout-form').addEventListener('submit',submitCheckout);
 $('#checkout-apply-promo').addEventListener('click',applyCheckoutPromo);
 $('#dashboard-content').addEventListener('submit',async e=>{
+  if(e.target.id==='message-compose-form'){
+    e.preventDefault();const message=$('#message-composer')?.value.trim()||'';if(!message||!state.activeConversationId)return;
+    try{await api('messages.send',{conversation_id:state.activeConversationId,message});$('#message-composer').value='';await openMessageThread(state.activeConversationId);}
+    catch(error){notify(error.message);}
+  }
   if(e.target.id==='growth-campaign-form'){
     e.preventDefault();$('#growth-campaign-error').textContent='';
     try{await api('admin.growth-campaign-save',{name:$('#growth-campaign-name').value,slug:$('#growth-campaign-slug').value,source:$('#growth-campaign-source').value,medium:$('#growth-campaign-medium').value,budget_kobo:nairaToKobo($('#growth-campaign-budget').value)});notify('Campaign created. Open Growth to copy its tracking link.');loadDashboardTab();}
