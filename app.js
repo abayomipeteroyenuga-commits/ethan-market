@@ -605,7 +605,8 @@ function csvRows(source) {
 }
 
 function downloadBulkProductTemplate() {
-  const csv='name,category_slug,description,price_naira,stock_qty,product_type,sku,image_url,digital_delivery_url,compare_at_naira\r\n"Sample product",electronics,"Describe the product in at least 10 characters",25000,10,physical,SKU-001,https://example.com/product.jpg,,30000\r\n';
+  const sampleCategory=String(state.categories[0]?.slug||'your-category-slug').replace(/"/g,'""');
+  const csv='name,category_slug,description,price_naira,stock_qty,product_type,sku,image_url,digital_delivery_url,compare_at_naira\r\n"Sample product","'+sampleCategory+'","Describe the product in at least 10 characters",25000,10,physical,SKU-001,https://example.com/product.jpg,,30000\r\n';
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),link=document.createElement('a');
   link.href=url;link.download='ethan-market-product-import-template.csv';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
 }
