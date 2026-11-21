@@ -261,8 +261,6 @@ async function toggleWishlist(productId) {
 }
 async function showProduct(productId) {
   try {
-    const found=state.products.find(p=>p.id===productId);
-    if(!found)return;
     const data=await api('products.detail',{id:productId}),p=data.product;
     state.currentProduct=p;
     trackGrowthEvent('product_view');
@@ -270,7 +268,7 @@ async function showProduct(productId) {
     const selected=variants.find(v=>Number(v.stock_qty)>0)||variants[0]||null;
     const selectedPrice=Number(selected?.price_kobo||p.price_kobo);
     const selectedStock=selected?Number(selected.stock_qty):Number(p.stock_qty||0);
-    const picker=variants.length?`<div class="form-field detail-variant-picker"><label for="detail-variant-select">Choose size, colour or model *</label><select id="detail-variant-select" data-detail-variant>${variants.map(v=>`<option value="${escAttr(v.id)}" ${selected?.id===v.id?'selected':''}>${html(v.label)}${v.sku?' · '+html(v.sku):''} · ${Number(v.stock_qty)>0?Number(v.stock_qty)+' available':'Out of stock'}</option>`).join('')}</select><small id="detail-variant-stock" aria-live="polite">${selectedStock>0?selectedStock+' available':'This option is out of stock'}</small></div>`:'';
+    const picker=variants.length?`<div class="form-field detail-variant-picker"><label for="detail-variant-select">Choose size, colour or model *</label><select id="detail-variant-select" data-detail-variant>${variants.map(v=>`<option value="${escAttr(v.id)}" ${selected?.id===v.id?'selected':''} ${Number(v.stock_qty)>0?'':'disabled'}>${html(v.label)}${v.sku?' · '+html(v.sku):''} · ${Number(v.stock_qty)>0?Number(v.stock_qty)+' available':'Out of stock'}</option>`).join('')}</select><small id="detail-variant-stock" aria-live="polite">${selectedStock>0?selectedStock+' available':'This option is out of stock'}</small></div>`:'';
     const outOfStock=p.product_type==='physical'&&selectedStock<1;
     $('#detail-content').innerHTML=`<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug||'')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price" id="detail-price">${money(selectedPrice)}</div>${picker}<div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span id="detail-availability">${selectedStock>0?'In stock':'Out of stock'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${outOfStock?'disabled':''}>${outOfStock?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
     showModal('detail-modal');
@@ -887,7 +885,7 @@ async function submitProduct(e){
   if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
   if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
   if(compare>0&&compare<=price){error.textContent='Previous price must be higher than the selling price.';$('#product-compare').focus();return;}
-  if(type==='physical'&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
+  if(type==='physical'&&!variants.length&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
   if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
   if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
   if(type==='digital'&&variants.length){error.textContent='Digital products cannot have physical stock variations.';return;}
