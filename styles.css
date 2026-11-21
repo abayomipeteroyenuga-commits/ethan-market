@@ -138,3 +138,27 @@
   .product-card-actions{gap:5px}
   .compare-button{font-size:7px!important;padding:5px}
 }
+
+
+/* ETHAN MARKET product variations */
+.variant-editor-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.variant-editor-head>div{display:grid;gap:5px;min-width:0}
+.variant-editor-head>div>label{font-size:11px;font-weight:800;color:#203b55}
+.variant-editor-head small,.variant-wrap>small{color:#7b8994;font-size:9px;line-height:1.5}
+.variant-editor-list{display:grid;gap:10px}
+.variant-row{display:grid;grid-template-columns:1.3fr 1fr .9fr .8fr auto;gap:8px;align-items:end;padding:12px;border:1px solid #e5eaed;border-radius:10px;background:#f9fbfc}
+.variant-row .form-field{min-width:0}
+.variant-row .form-field label{font-size:9px}
+.variant-row .form-field input{min-width:0;padding:10px 8px;font-size:10px}
+.variant-remove{white-space:nowrap;min-height:34px}
+.variant-stock-list{display:block;margin-top:5px;color:#7b8994;font-size:8px;line-height:1.6}
+.detail-variant-picker{margin:14px 0 8px}
+.detail-variant-picker select{width:100%;border:1px solid #dedfdc;border-radius:7px;padding:12px;color:#24364a;background:#fff;font:inherit;font-size:11px}
+.detail-variant-picker small{font-size:9px;color:#7b8994}
+.detail-variant-picker small:empty{display:none}
+@media(max-width:760px){
+  .variant-row{grid-template-columns:1fr 1fr;gap:9px}
+  .variant-row .form-field:first-child{grid-column:span 2}
+  .variant-remove{grid-column:span 2;justify-self:start}
+  .variant-editor-head{align-items:flex-start;flex-direction:column}
+}
