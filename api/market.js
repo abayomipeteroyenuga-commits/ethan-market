@@ -115,12 +115,15 @@ const schema = [
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_number text NOT NULL UNIQUE,
     buyer_id uuid NOT NULL REFERENCES market_users(id), buyer_email text NOT NULL,
     recipient_name text NOT NULL, phone text NOT NULL, subtotal_kobo bigint NOT NULL, shipping_kobo bigint NOT NULL DEFAULT 0,
-    total_kobo bigint NOT NULL, currency text NOT NULL DEFAULT 'NGN', payment_status text NOT NULL DEFAULT 'pending'
+    total_kobo bigint NOT NULL, currency text NOT NULL DEFAULT 'NGN', payment_provider text NOT NULL DEFAULT 'paystack', payment_reference text, payment_status text NOT NULL DEFAULT 'pending'
       CHECK (payment_status IN ('pending','paid','failed','refunded','reversed')),
     status text NOT NULL DEFAULT 'pending_payment' CHECK (status IN ('pending_payment','processing','partially_dispatched','dispatched','delivered','cancelled','refunded')),
     paystack_reference text UNIQUE, shipping_address jsonb NOT NULL DEFAULT '{}'::jsonb, buyer_note text NOT NULL DEFAULT '',
     payment_verified_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS payment_provider text NOT NULL DEFAULT 'paystack'`,
+  `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS payment_reference text`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_orders_payment_reference_uq ON market_orders(payment_reference) WHERE payment_reference IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS market_orders_buyer_idx ON market_orders(buyer_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_orders_status_idx ON market_orders(status, payment_status, created_at DESC)`,
   `ALTER TABLE market_orders ADD COLUMN IF NOT EXISTS discount_kobo bigint NOT NULL DEFAULT 0`,
@@ -405,8 +408,20 @@ async function ensureSchema() {
           'market_messages_unread_idx','market_delivery_events_item_idx']]);
       return Number(result.rows[0]?.count||0)===8;
     };
+    const hasPaymentColumns = async (executor) => {
+      const result=await executor.query(`SELECT COUNT(*)::int AS count FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='market_orders'
+          AND column_name=ANY($1::text[])`,[['payment_provider','payment_reference']]);
+      return Number(result.rows[0]?.count||0)===2;
+    };
+    const hasPaymentIndex = async (executor) => {
+      const result=await executor.query(`SELECT COUNT(*)::int AS count FROM pg_indexes
+        WHERE schemaname='public' AND indexname='market_orders_payment_reference_uq'`);
+      return Number(result.rows[0]?.count||0)===1;
+    };
     if (await countTables(db) === requiredTables.length && await hasVariantColumns(db) &&
-        await hasVariantIndexes(db) && await hasCommunicationIndexes(db)) return;
+        await hasVariantIndexes(db) && await hasCommunicationIndexes(db) &&
+        await hasPaymentColumns(db) && await hasPaymentIndex(db)) return;
 
     // Serialize only a genuine schema bootstrap. Re-check after obtaining the
     // lock in case another cold-start instance completed it while we waited.
@@ -416,7 +431,7 @@ async function ensureSchema() {
     try {
       await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
       locked = true;
-      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client)) || !(await hasVariantIndexes(client)) || !(await hasCommunicationIndexes(client))) {
+      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client)) || !(await hasVariantIndexes(client)) || !(await hasCommunicationIndexes(client)) || !(await hasPaymentColumns(client)) || !(await hasPaymentIndex(client))) {
         for (const sql of schema) await client.query(sql);
       }
     } finally {
@@ -494,6 +509,15 @@ function safeEqual(a, b) {
   const aa = Buffer.from(String(a || ''));
   const bb = Buffer.from(String(b || ''));
   return aa.length === bb.length && aa.length > 0 && crypto.timingSafeEqual(aa, bb);
+}
+
+function monnifyBaseUrl() {
+  return String(process.env.MONNIFY_BASE_URL||'https://sandbox.monnify.com').trim().replace(/\\/$/,'');
+}
+function monnifyConfigured() {
+  return Boolean(process.env.MONNIFY_API_KEY && process.env.MONNIFY_SECRET_KEY &&
+    process.env.MONNIFY_CONTRACT_CODE &&
+    ['https://sandbox.monnify.com','https://api.monnify.com'].includes(monnifyBaseUrl()));
 }
 
 async function passwordHash(password) {
@@ -1384,7 +1408,7 @@ async function bulkSaveProducts(db,req,body) {
   return {imported:imported.length,failed:errors.length,products:imported,errors};
 }
 async function checkout(db, req, body) {
-  if (!process.env.PAYSTACK_SECRET_KEY) throw new HttpError(503,'Secure checkout is being connected. Marketplace browsing and seller registration are available, but payment is not enabled yet.');
+  if (!monnifyConfigured()) throw new HttpError(503,'Monnify secure checkout is not configured yet. Marketplace browsing and seller registration remain available.');
   const user = await requireRole(req, db, ['buyer','seller','admin','super_admin']);
   await rateLimit(db, 'checkout', user.id, 10, 60);
   const items = Array.isArray(body.items) ? body.items : [];
@@ -1483,8 +1507,8 @@ async function checkout(db, req, body) {
     };
     if (physical && (!recipient || !phone || !address.line1 || !address.city || !address.state)) throw new HttpError(400,'Complete the delivery name, phone, street, city and state for physical items.');
     await dbClient.query(
-      `INSERT INTO market_orders(id,order_number,buyer_id,buyer_email,recipient_name,phone,subtotal_kobo,shipping_kobo,total_kobo,paystack_reference,shipping_address,buyer_note,discount_kobo,promo_code,campaign_slug,affiliate_user_id)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      `INSERT INTO market_orders(id,order_number,buyer_id,buyer_email,recipient_name,phone,subtotal_kobo,shipping_kobo,total_kobo,payment_provider,payment_reference,shipping_address,buyer_note,discount_kobo,promo_code,campaign_slug,affiliate_user_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'monnify',$10,$11,$12,$13,$14,$15,$16)`,
       [orderId,orderNumber,user.id,user.email,recipient,phone,subtotal,shipping,total,ref,JSON.stringify(address),text(body.buyer_note,1000),discount,promo?.code||'',campaignSlug,affiliateUser]
     );
     for (const it of itemSnapshots) {
@@ -1494,26 +1518,36 @@ async function checkout(db, req, body) {
         [orderId,it.p.id,it.variant?.id||null,it.variant?.label||'',it.variant?.sku||'',it.p.seller_id,it.p.name,it.p.product_type,it.quantity,it.unitPrice,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled']
       );
     }
-    await dbClient.query('INSERT INTO market_payments(order_id,reference,amount_kobo) VALUES($1,$2,$3)',[orderId,ref,total]);
+    await dbClient.query("INSERT INTO market_payments(order_id,provider,reference,amount_kobo) VALUES($1,'monnify',$2,$3)",[orderId,ref,total]);
     if(promo) await dbClient.query(
       `INSERT INTO market_promo_redemptions(promo_id,order_id,user_id,discount_kobo,status)
        VALUES($1,$2,$3,$4,'reserved')`,[promo.id,orderId,user.id,discount]
     );
     await trackGrowthEvent(dbClient,{event_type:'checkout_started',user_id:user.id,order_id:orderId,campaign_slug:campaignSlug,metadata:{promo_code:promo?.code||'',affiliate_attributed:!!affiliateUser}});
     await dbClient.query('COMMIT');
-    order={id:orderId,order_number:orderNumber,reference:ref,total_kobo:total,email:user.email,discount_kobo:discount,promo_code:promo?.code||''};
+    order={id:orderId,order_number:orderNumber,reference:ref,total_kobo:total,email:user.email,customer_name:recipient,discount_kobo:discount,promo_code:promo?.code||''};
   } catch(e) { await dbClient.query('ROLLBACK'); throw e; }
   finally { dbClient.release(); }
 
-  const callback = (process.env.MARKET_PUBLIC_URL || 'https://market.ethandigitalacademy.org').replace(/\/$/,'') + '/?payment=verify';
+  const callback = (process.env.MARKET_PUBLIC_URL || 'https://market.ethandigitalacademy.org').replace(/\\/$/,'') + '/?payment=verify&reference=' + encodeURIComponent(order.reference);
   try {
-    const gateway = await paystack('/transaction/initialize', {
+    const gateway = await monnifyRequest('/api/v1/merchant/transactions/init-transaction', {
       method:'POST',
-      body:{email:order.email,amount:String(order.total_kobo),currency:'NGN',reference:order.reference,callback_url:callback,
-        metadata:{order_id:order.id,order_number:order.order_number,app:'ETHAN MARKET'},channels:['card','bank','bank_transfer','ussd']}
+      body:{
+        amount:Number((order.total_kobo/100).toFixed(2)),
+        customerName:order.customer_name,
+        customerEmail:order.email,
+        paymentReference:order.reference,
+        paymentDescription:'ETHAN MARKET order '+order.order_number,
+        currencyCode:'NGN',
+        contractCode:process.env.MONNIFY_CONTRACT_CODE,
+        redirectUrl:callback,
+        paymentMethods:['CARD','ACCOUNT_TRANSFER']
+      }
     });
-    if (!gateway?.data?.authorization_url) throw new HttpError(502,'Paystack did not return a checkout link.');
-    return { authorization_url:gateway.data.authorization_url,reference:order.reference,order_number:order.order_number,total_kobo:order.total_kobo };
+    if (!gateway?.checkoutUrl) throw new HttpError(502,'Monnify did not return a secure checkout link.');
+    await db.query("UPDATE market_payments SET gateway_payload=$2::jsonb WHERE reference=$1 AND provider='monnify'",[order.reference,JSON.stringify({transactionReference:gateway.transactionReference||'',paymentReference:order.reference})]);
+    return { checkout_url:gateway.checkoutUrl,reference:order.reference,order_number:order.order_number,total_kobo:order.total_kobo };
   } catch (error) {
     await db.query("UPDATE market_orders SET payment_status='failed',status='cancelled',updated_at=now() WHERE id=$1 AND payment_status='pending'",[order.id]);
     await db.query("UPDATE market_payments SET status='failed' WHERE reference=$1 AND status='pending'",[order.reference]);
@@ -1539,15 +1573,67 @@ async function paystack(path, options={}) {
   return payload;
 }
 
+let monnifyTokenCache = { token:'', expiresAt:0 };
+async function monnifyAccessToken() {
+  if(monnifyTokenCache.token && monnifyTokenCache.expiresAt>Date.now()+30000) return monnifyTokenCache.token;
+  if(!monnifyConfigured()) throw new HttpError(503,'Monnify API credentials and contract code are not configured.');
+  let response;
+  try {
+    const basic=Buffer.from(process.env.MONNIFY_API_KEY+':'+process.env.MONNIFY_SECRET_KEY).toString('base64');
+    response=await fetch(monnifyBaseUrl()+'/api/v1/auth/login',{
+      method:'POST',headers:{Authorization:'Basic '+basic,'Content-Type':'application/json',Accept:'application/json'},
+      signal:AbortSignal.timeout(15000)
+    });
+  } catch { throw new HttpError(502,'Monnify authentication service is temporarily unavailable.'); }
+  const payload=await response.json().catch(()=>({}));
+  const token=payload?.responseBody?.accessToken;
+  if(!response.ok||payload?.requestSuccessful!==true||!token) throw new HttpError(502,'Monnify authentication failed. Check the API key and secret in Vercel.');
+  const seconds=Math.max(60,Number(payload.responseBody.expiresIn)||3600);
+  monnifyTokenCache={token,expiresAt:Date.now()+Math.max(60,seconds-120)*1000};
+  return token;
+}
+
+async function monnifyRequest(path,options={}) {
+  const token=await monnifyAccessToken();
+  let response;
+  try {
+    response=await fetch(monnifyBaseUrl()+path,{
+      method:options.method||'GET',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',Accept:'application/json'},
+      body:options.body?JSON.stringify(options.body):undefined,signal:AbortSignal.timeout(15000)
+    });
+  } catch { throw new HttpError(502,'Monnify payment service is temporarily unavailable.'); }
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||payload?.requestSuccessful!==true||!payload?.responseBody) {
+    throw new HttpError(502,payload?.responseMessage||'Monnify could not complete the payment request.');
+  }
+  return payload.responseBody;
+}
+
+async function verifyMonnifyTransaction(reference) {
+  const result=await monnifyRequest('/api/v2/merchant/transactions/query?paymentReference='+encodeURIComponent(reference));
+  const returnedReference=text(result.paymentReference,120);
+  const status=String(result.paymentStatus||'').toUpperCase();
+  if(returnedReference!==reference) throw new HttpError(409,'Monnify returned a different payment reference.');
+  if(status!=='PAID') throw new HttpError(409,'Monnify has not confirmed this payment as PAID yet. Current status: '+(status||'unknown')+'.');
+  const amountNaira=Number(result.amountPaid);
+  if(!Number.isFinite(amountNaira)||amountNaira<=0) throw new HttpError(409,'Monnify did not return a valid amount received.');
+  return {provider:'monnify',status:'success',reference:returnedReference,amount:Math.round(amountNaira*100),
+    currency:String(result.currencyCode||result.currency||''),gatewayPayload:result};
+}
+
 async function finalizePaid(db, transaction) {
   if (!transaction || transaction.status !== 'success' || !transaction.reference) throw new HttpError(400,'This transaction has not been confirmed as successful.');
   const client = await db.connect();
   let orderInfo;
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query('SELECT * FROM market_orders WHERE paystack_reference=$1 FOR UPDATE',[String(transaction.reference)]);
+    const provider=String(transaction.provider||'paystack');
+    const { rows } = await client.query('SELECT * FROM market_orders WHERE payment_reference=$1 OR paystack_reference=$1 FOR UPDATE',[String(transaction.reference)]);
     if (!rows.length) throw new HttpError(404,'No ETHAN MARKET order matches this payment reference.');
     const order = rows[0];
+    if(String(order.payment_provider||'paystack')!==provider) throw new HttpError(409,'This payment reference belongs to a different payment provider.');
+    const payment=await client.query('SELECT provider,amount_kobo FROM market_payments WHERE reference=$1 FOR UPDATE',[String(transaction.reference)]);
+    if(payment.rows[0]&&(payment.rows[0].provider!==provider||Number(payment.rows[0].amount_kobo)!==Number(order.total_kobo))) throw new HttpError(409,'The payment ledger does not match this order.');
     if (Number(transaction.amount) !== Number(order.total_kobo) || String(transaction.currency).toUpperCase() !== 'NGN') throw new HttpError(400,'The payment amount or currency does not match this order.');
     const productIdsResult=await client.query(`SELECT DISTINCT product_id FROM market_order_items
       WHERE order_id=$1 AND product_type='physical' AND product_id IS NOT NULL ORDER BY product_id`,[order.id]);
@@ -1555,7 +1641,7 @@ async function finalizePaid(db, transaction) {
     if(productIds.length) await client.query('SELECT id FROM market_products WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[productIds]);
     if (order.payment_status !== 'paid') {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
-      await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
+      await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1 AND provider=$3",[String(transaction.reference),JSON.stringify(transaction.gatewayPayload||transaction),provider]);
       const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,variant_id,quantity',[order.id]);
       for (const row of changed) if (row.product_id) {
         if(row.variant_id){
@@ -1638,12 +1724,18 @@ async function verifyPayment(db, req, body) {
   const user = await currentUser(req,db,true);
   const reference = text(body.reference,120);
   if (!reference) throw new HttpError(400,'Payment reference is required.');
-  const { rows } = await db.query('SELECT id,buyer_id FROM market_orders WHERE paystack_reference=$1',[reference]);
+  const { rows } = await db.query('SELECT id,buyer_id,payment_provider FROM market_orders WHERE payment_reference=$1 OR paystack_reference=$1 LIMIT 1',[reference]);
   if (!rows.length) throw new HttpError(404,'Order not found.');
   if (rows[0].buyer_id !== user.id && !['admin','super_admin'].includes(user.role)) throw new HttpError(403,'This order does not belong to your account.');
-  const verified = await paystack('/transaction/verify/'+encodeURIComponent(reference));
-  const order = await finalizePaid(db,verified.data);
-  return { order };
+  let order;
+  if(String(rows[0].payment_provider||'paystack')==='monnify') {
+    const verified=await verifyMonnifyTransaction(reference);
+    order=await finalizePaid(db,verified);
+  } else {
+    const verified=await paystack('/transaction/verify/'+encodeURIComponent(reference));
+    order=await finalizePaid(db,{...verified.data,provider:'paystack'});
+  }
+  return {order};
 }
 
 function verifyWebhookSignature(req, rawBody) {
@@ -1673,18 +1765,43 @@ async function readRaw(req) {
   });
 }
 
+function verifyMonnifyWebhookSignature(req,rawBody) {
+  const secret=process.env.MONNIFY_SECRET_KEY;
+  const signature=String(req.headers['monnify-signature']||'').trim();
+  if(!secret) return false;
+  if(!signature) return monnifyBaseUrl()==='https://sandbox.monnify.com';
+  const expected=crypto.createHmac('sha512',secret).update(rawBody).digest('hex');
+  return safeEqual(signature.toLowerCase(),expected.toLowerCase());
+}
+
 async function webhook(req,res,db) {
-  const raw = await readRaw(req);
-  if (!verifyWebhookSignature(req,raw)) return send(res,401,{error:'Invalid payment webhook signature.'});
+  const raw=await readRaw(req);
   let event;
   try { event=JSON.parse(raw.toString('utf8')); } catch { return send(res,400,{error:'Invalid webhook payload.'}); }
-  if (event.event === 'charge.success' && event.data?.reference) {
+
+  if(event.eventType) {
+    if(!verifyMonnifyWebhookSignature(req,raw)) return send(res,401,{error:'Invalid Monnify webhook signature.'});
+    if(event.eventType==='SUCCESSFUL_TRANSACTION' && event.eventData?.paymentReference) {
+      try {
+        const verified=await verifyMonnifyTransaction(text(event.eventData.paymentReference,120));
+        await finalizePaid(db,verified);
+      } catch(error) {
+        console.error('ETHAN MARKET Monnify webhook processing failed:',error.message);
+        return send(res,500,{error:'Monnify notification could not be verified. The provider may retry.'});
+      }
+    }
+    return send(res,200,{received:true});
+  }
+
+  // Legacy Paystack events are retained only for orders created before migration.
+  if(!verifyWebhookSignature(req,raw)) return send(res,401,{error:'Invalid payment webhook signature.'});
+  if(event.event==='charge.success' && event.data?.reference) {
     try {
       const verification=await paystack('/transaction/verify/'+encodeURIComponent(event.data.reference));
-      await finalizePaid(db,verification.data);
-    } catch (e) {
-      console.error('ETHAN MARKET webhook processing failed:',e.message);
-      return send(res,500,{error:'Webhook could not be processed. Paystack may retry.'});
+      await finalizePaid(db,{...verification.data,provider:'paystack'});
+    } catch(error) {
+      console.error('ETHAN MARKET legacy payment webhook processing failed:',error.message);
+      return send(res,500,{error:'Payment webhook could not be processed. The provider may retry.'});
     }
   }
   return send(res,200,{received:true});
@@ -2023,7 +2140,7 @@ async function adminOverview(db,req) {
   ]);
   return {
     orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows,
-    integrations:{paystack_configured:!!process.env.PAYSTACK_SECRET_KEY,media_uploads_configured:!!process.env.BLOB_READ_WRITE_TOKEN,payout_encryption_configured:!!fieldKey()}
+    integrations:{monnify_configured:monnifyConfigured(),payment_environment:monnifyBaseUrl()==='https://api.monnify.com'?'Live':'Sandbox',media_uploads_configured:!!process.env.BLOB_READ_WRITE_TOKEN,payout_encryption_configured:!!fieldKey()}
   };
 }
 
@@ -2261,8 +2378,8 @@ async function storeDetails(db, slug) {
 
 async function handle(db,req,res,body) {
   const action=text(body.action,80);
-  if(action==='health') return {status:'ok',service:'ETHAN MARKET',database:'connected',payments:!!process.env.PAYSTACK_SECRET_KEY};
-  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 1000), seller_payout_hold_days:Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7)), payments_enabled:!!process.env.PAYSTACK_SECRET_KEY, support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
+  if(action==='health') return {status:'ok',service:'ETHAN MARKET',database:'connected',payments:monnifyConfigured(),payment_provider:'Monnify'};
+  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 1000), seller_payout_hold_days:Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7)), payments_enabled:monnifyConfigured(), payment_provider:'Monnify', support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
   if(action==='auth.register') return authRegister(db,req,res,body);
   if(action==='auth.login') return authLogin(db,req,res,body);
   if(action==='auth.me') return authMe(db,req);
@@ -2312,7 +2429,7 @@ module.exports = async function handler(req,res) {
   if(req.method==='GET') {
     const url = new URL(req.url || '/api/market', 'https://market.ethandigitalacademy.org');
     if (url.searchParams.get('health') === '1') {
-      try { await ensureSchema(); return send(res,200,{status:'ok',service:'ETHAN MARKET',database:'connected',payments:!!process.env.PAYSTACK_SECRET_KEY,uploads:!!process.env.BLOB_READ_WRITE_TOKEN}); }
+      try { await ensureSchema(); return send(res,200,{status:'ok',service:'ETHAN MARKET',database:'connected',payments:monnifyConfigured(),payment_provider:'Monnify',uploads:!!process.env.BLOB_READ_WRITE_TOKEN}); }
       catch(e) { console.error('ETHAN MARKET health check failed:',e.message); return send(res,503,{status:'unavailable',service:'ETHAN MARKET',database:'unavailable'}); }
     }
     return send(res,405,{error:'Method not allowed.'});
