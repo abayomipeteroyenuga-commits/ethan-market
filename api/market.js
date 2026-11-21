@@ -951,7 +951,7 @@ async function sellerDashboard(db, req) {
   const seller = await getSellerByUser(db,user.id,true);
   const [products, orders, payouts, disputes, salesSummary, salesTrend, topProducts, totalViews] = await Promise.all([
     db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,p.views,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
-    db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
+    db.query(`SELECT oi.id,oi.product_name,oi.variant_label,oi.variant_sku,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
     db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,eligible_at,hold_reason,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id]),
     db.query(`SELECT d.*,o.order_number,oi.product_name,u.full_name AS buyer_name FROM market_disputes d
@@ -1146,12 +1146,15 @@ async function checkout(db, req, body) {
   await rateLimit(db, 'checkout', user.id, 10, 60);
   const items = Array.isArray(body.items) ? body.items : [];
   if (!items.length || items.length > 30) throw new HttpError(400,'Your cart is empty or contains too many products.');
-  const quantities = new Map();
+  const cartLines = new Map();
   for (const item of items) {
-    const id = text(item.product_id,80); const q = Math.min(Math.max(parseInt(item.quantity,10)||0,0),20);
-    if (!/^[0-9a-f-]{36}$/i.test(id) || q < 1) throw new HttpError(400,'Your cart contains an invalid item.');
-    quantities.set(id,(quantities.get(id)||0)+q);
-    if (quantities.get(id) > 20) throw new HttpError(400,'A product quantity cannot exceed 20 per checkout.');
+    const productId=text(item.product_id,80),variantId=text(item.variant_id,80),quantity=Math.min(Math.max(parseInt(item.quantity,10)||0,0),20);
+    if(!/^[0-9a-f-]{36}$/i.test(productId)||quantity<1) throw new HttpError(400,'Your cart contains an invalid item.');
+    if(variantId&&!/^[0-9a-f-]{36}$/i.test(variantId)) throw new HttpError(400,'A product variation in your cart is invalid.');
+    const key=productId+':'+variantId,line=cartLines.get(key)||{product_id:productId,variant_id:variantId,quantity:0};
+    line.quantity+=quantity;
+    if(line.quantity>20) throw new HttpError(400,'A product variation quantity cannot exceed 20 per checkout.');
+    cartLines.set(key,line);
   }
   const dbClient = await db.connect();
   let order;
@@ -1162,34 +1165,57 @@ async function checkout(db, req, body) {
        WHERE r.order_id=o.id AND r.status='reserved' AND (o.payment_status<>'pending' OR o.created_at<now()-interval '30 minutes')`
     );
     await dbClient.query("UPDATE market_orders SET payment_status='failed',status='cancelled',updated_at=now() WHERE payment_status='pending' AND created_at < now()-interval '30 minutes'");
-    const ids = [...quantities.keys()];
-    const { rows: products } = await dbClient.query(
+    const ids=[...new Set([...cartLines.values()].map(line=>line.product_id))];
+    const {rows:products}=await dbClient.query(
       `SELECT p.*,s.id AS approved_seller_id,s.commission_bps,s.store_name FROM market_products p
-       JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved' FOR UPDATE OF p`, [ids]
+       JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved' FOR UPDATE OF p`,[ids]
     );
-    if (products.length !== ids.length) throw new HttpError(409,'One or more products are no longer available. Refresh your cart.');
-    let subtotal = 0; let physical = false; let marketplaceFee = 0;
-    const orderId = crypto.randomUUID();
-    const orderNumber = 'EM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
-    const ref = 'EM' + Date.now().toString() + crypto.randomBytes(5).toString('hex').toUpperCase();
+    if(products.length!==ids.length) throw new HttpError(409,'One or more products are no longer available. Refresh your cart.');
+    const productMap=new Map(products.map(product=>[product.id,product]));
+    const {rows:variantRows}=await dbClient.query(
+      `SELECT id,product_id,label,sku,price_kobo,stock_qty FROM market_product_variants
+       WHERE product_id=ANY($1::uuid[]) AND is_active=true FOR UPDATE`,[ids]
+    );
+    const variantMap=new Map();
+    for(const variant of variantRows){
+      if(!variantMap.has(variant.product_id))variantMap.set(variant.product_id,[]);
+      variantMap.get(variant.product_id).push(variant);
+    }
+    let subtotal=0,physical=false,marketplaceFee=0;
+    const orderId=crypto.randomUUID();
+    const orderNumber='EM-'+new Date().toISOString().slice(0,10).replace(/-/g,'')+'-'+crypto.randomBytes(3).toString('hex').toUpperCase();
+    const ref='EM'+Date.now().toString()+crypto.randomBytes(5).toString('hex').toUpperCase();
     const itemSnapshots=[];
-    for (const p of products) {
-      const quantity = quantities.get(p.id);
-      if (p.product_type === 'physical') {
-        const reserved = await dbClient.query(
-          `SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi
-           JOIN market_orders o ON o.id=oi.order_id
-           WHERE oi.product_id=$1 AND oi.product_type='physical' AND o.payment_status='pending'
-             AND o.created_at >= now()-interval '30 minutes'`, [p.id]
-        );
-        const available = Number(p.stock_qty) - Number(reserved.rows[0]?.quantity || 0);
-        if (available < quantity) throw new HttpError(409,`${p.name} has only ${Math.max(available,0)} item(s) currently available.`);
+    for(const line of cartLines.values()){
+      const p=productMap.get(line.product_id),quantity=line.quantity;
+      const productVariants=variantMap.get(p.id)||[];
+      let variant=null;
+      if(line.variant_id){
+        variant=productVariants.find(option=>option.id===line.variant_id)||null;
+        if(!variant) throw new HttpError(409,`The selected option for ${p.name} is no longer available. Refresh your cart.`);
+      }else if(productVariants.length){
+        throw new HttpError(400,`Choose an option for ${p.name} before checkout.`);
       }
-      subtotal += Number(p.price_kobo) * quantity;
-      if (p.product_type === 'physical') physical = true;
-      const commission = Math.round(Number(p.price_kobo) * quantity * Number(p.commission_bps) / 10000);
+      if(variant&&p.product_type!=='physical') throw new HttpError(400,'Only physical products can have stock variations.');
+      const unitPrice=Number(variant?.price_kobo||p.price_kobo);
+      if(p.product_type==='physical'){
+        const reserved=variant
+          ? await dbClient.query(`SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi
+              JOIN market_orders o ON o.id=oi.order_id WHERE oi.variant_id=$1 AND o.payment_status='pending'
+                AND o.created_at>=now()-interval '30 minutes'`,[variant.id])
+          : await dbClient.query(`SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi
+              JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.variant_id IS NULL
+                AND oi.product_type='physical' AND o.payment_status='pending'
+                AND o.created_at>=now()-interval '30 minutes'`,[p.id]);
+        const stock=Number(variant?variant.stock_qty:p.stock_qty);
+        const available=stock-Number(reserved.rows[0]?.quantity||0);
+        if(available<quantity) throw new HttpError(409,`${p.name}${variant?' · '+variant.label:''} has only ${Math.max(available,0)} item(s) currently available.`);
+      }
+      subtotal+=unitPrice*quantity;
+      if(p.product_type==='physical')physical=true;
+      const commission=Math.round(unitPrice*quantity*Number(p.commission_bps)/10000);
       marketplaceFee+=commission;
-      itemSnapshots.push({p,quantity,commission,net:Number(p.price_kobo)*quantity-commission});
+      itemSnapshots.push({p,variant,quantity,unitPrice,commission,net:unitPrice*quantity-commission});
     }
     if (!Number.isSafeInteger(subtotal) || subtotal < 100) throw new HttpError(400,'The cart total is invalid.');
     const settings = await getSettings(dbClient);
@@ -1220,9 +1246,9 @@ async function checkout(db, req, body) {
     );
     for (const it of itemSnapshots) {
       await dbClient.query(
-        `INSERT INTO market_order_items(order_id,product_id,seller_id,product_name,product_type,quantity,unit_price_kobo,commission_kobo,seller_net_kobo,digital_delivery_url,fulfillment_status)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [orderId,it.p.id,it.p.seller_id,it.p.name,it.p.product_type,it.quantity,it.p.price_kobo,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled']
+        `INSERT INTO market_order_items(order_id,product_id,variant_id,variant_label,variant_sku,seller_id,product_name,product_type,quantity,unit_price_kobo,commission_kobo,seller_net_kobo,digital_delivery_url,fulfillment_status)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [orderId,it.p.id,it.variant?.id||null,it.variant?.label||'',it.variant?.sku||'',it.p.seller_id,it.p.name,it.p.product_type,it.quantity,it.unitPrice,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled']
       );
     }
     await dbClient.query('INSERT INTO market_payments(order_id,reference,amount_kobo) VALUES($1,$2,$3)',[orderId,ref,total]);
@@ -1283,8 +1309,11 @@ async function finalizePaid(db, transaction) {
     if (order.payment_status !== 'paid') {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
-      const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,quantity',[order.id]);
-      for (const row of changed) if (row.product_id) await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+      const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,variant_id,quantity',[order.id]);
+      for (const row of changed) if (row.product_id) {
+        if(row.variant_id) await client.query('UPDATE market_product_variants SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.variant_id,row.quantity]);
+        await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+      }
       const holdSetting=await client.query("SELECT value FROM market_settings WHERE key='seller_payout_hold_days'");
       const holdDays=Math.min(30,Math.max(1,Number(holdSetting.rows[0]?.value)||7));
       await client.query(
@@ -1411,7 +1440,7 @@ async function buyerOrders(db,req) {
   const user=await currentUser(req,db,true);
   const {rows}=await db.query(
     `SELECT o.id,o.order_number,o.subtotal_kobo,o.shipping_kobo,o.total_kobo,o.payment_status,o.status,o.created_at,
-      json_agg(json_build_object('id',oi.id,'product_id',oi.product_id,'product_name',oi.product_name,'product_type',oi.product_type,'quantity',oi.quantity,
+      json_agg(json_build_object('id',oi.id,'product_id',oi.product_id,'product_name',oi.product_name,'variant_label',oi.variant_label,'variant_sku',oi.variant_sku,'product_type',oi.product_type,'quantity',oi.quantity,
        'unit_price_kobo',oi.unit_price_kobo,'fulfillment_status',oi.fulfillment_status,'tracking_number',oi.tracking_number,'tracking_carrier',oi.tracking_carrier,
        'buyer_confirmed_at',oi.buyer_confirmed_at,'delivered_at',oi.delivered_at,'payout_status',p.status,'payout_eligible_at',p.eligible_at,
        'dispute_id',d.id,'dispute_status',d.status,'dispute_reason',d.reason,
@@ -1750,7 +1779,7 @@ async function adminList(db,req,kind) {
     return {products:rows};
   }
   if(kind==='orders') {
-    const {rows}=await db.query(`SELECT o.*,COALESCE(json_agg(json_build_object('id',i.id,'product_name',i.product_name,'product_type',i.product_type,'quantity',i.quantity,'seller_id',i.seller_id,'fulfillment_status',i.fulfillment_status,'tracking_number',i.tracking_number,'tracking_carrier',i.tracking_carrier)) FILTER(WHERE i.id IS NOT NULL),'[]'::json) AS items FROM market_orders o LEFT JOIN market_order_items i ON i.order_id=o.id GROUP BY o.id ORDER BY o.created_at DESC LIMIT 250`);
+    const {rows}=await db.query(`SELECT o.*,COALESCE(json_agg(json_build_object('id',i.id,'product_name',i.product_name,'variant_label',i.variant_label,'variant_sku',i.variant_sku,'product_type',i.product_type,'quantity',i.quantity,'seller_id',i.seller_id,'fulfillment_status',i.fulfillment_status,'tracking_number',i.tracking_number,'tracking_carrier',i.tracking_carrier)) FILTER(WHERE i.id IS NOT NULL),'[]'::json) AS items FROM market_orders o LEFT JOIN market_order_items i ON i.order_id=o.id GROUP BY o.id ORDER BY o.created_at DESC LIMIT 250`);
     return {orders:rows};
   }
   if(kind==='payouts') {
