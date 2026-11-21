@@ -921,20 +921,50 @@ async function notificationsMarkRead(db, req, body) {
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
-  const [products, orders, payouts, disputes] = await Promise.all([
-    db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
+  const [products, orders, payouts, disputes, salesSummary, salesTrend, topProducts] = await Promise.all([
+    db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,p.views,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
     db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
     db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,eligible_at,hold_reason,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id]),
     db.query(`SELECT d.*,o.order_number,oi.product_name,u.full_name AS buyer_name FROM market_disputes d
       JOIN market_orders o ON o.id=d.order_id JOIN market_order_items oi ON oi.id=d.order_item_id
-      JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id])
+      JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id]),
+    db.query(`SELECT COALESCE(SUM(oi.unit_price_kobo*oi.quantity),0)::text AS gross_revenue_kobo,
+      COUNT(DISTINCT oi.order_id)::int AS paid_orders,COALESCE(SUM(oi.quantity),0)::int AS units_sold
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid' AND o.created_at>=now()-interval '30 days'`,[seller.id]),
+    db.query(`WITH sales AS (
+        SELECT o.created_at::date AS sale_day,oi.order_id,
+          SUM(oi.unit_price_kobo*oi.quantity)::bigint AS revenue_kobo
+        FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+        WHERE oi.seller_id=$1 AND o.payment_status='paid'
+          AND o.created_at>=current_date-interval '13 days'
+        GROUP BY o.created_at::date,oi.order_id
+      )
+      SELECT to_char(days.day,'YYYY-MM-DD') AS day,
+        COALESCE(SUM(sales.revenue_kobo),0)::text AS revenue_kobo,
+        COUNT(sales.order_id)::int AS orders
+      FROM generate_series(current_date-interval '13 days',current_date,interval '1 day') AS days(day)
+      LEFT JOIN sales ON sales.sale_day=days.day
+      GROUP BY days.day ORDER BY days.day`,[seller.id]),
+    db.query(`SELECT oi.product_id,oi.product_name,
+        COALESCE(SUM(oi.unit_price_kobo*oi.quantity),0)::text AS revenue_kobo,
+        COALESCE(SUM(oi.quantity),0)::int AS units_sold
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid' AND o.created_at>=now()-interval '30 days'
+      GROUP BY oi.product_id,oi.product_name ORDER BY SUM(oi.unit_price_kobo*oi.quantity) DESC LIMIT 5`,[seller.id])
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
     seller: sellerPublic(seller), products: products.rows, orders: orders.rows,
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
+    analytics: {
+      summary: salesSummary.rows[0],
+      total_views: products.rows.reduce((sum,product)=>sum+Number(product.views||0),0),
+      sales_trend: salesTrend.rows,
+      top_products: topProducts.rows
+    },
     referral_url: 'https://market.ethandigitalacademy.org/?ref=' + encodeURIComponent(growthProfile.referral_code)
   };
 }
@@ -993,6 +1023,42 @@ async function saveProduct(db, req, body) {
   return { product: rows[0] };
 }
 
+async function updateSellerInventory(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const seller=await getSellerByUser(db,user.id,true);
+  const id=text(body.id,80);
+  const stock=Number(body.stock_qty);
+  if(!id||!Number.isInteger(stock)||stock<0||stock>1000000) throw new HttpError(400,'Enter a whole-number stock quantity between 0 and 1,000,000.');
+  const result=await db.query("UPDATE market_products SET stock_qty=$3,updated_at=now() WHERE id=$1 AND seller_id=$2 AND product_type='physical' RETURNING id,name,stock_qty,status",[id,seller.id,stock]);
+  if(!result.rows.length) throw new HttpError(404,'Physical product was not found in your store.');
+  await audit(db,user.id,'PRODUCT_STOCK_UPDATED','product',id,{stock_qty:stock});
+  if(stock<=5) await createNotification(db,user.id,{
+    type:'inventory_low',title:stock===0?'Product is out of stock':'Low stock reminder',
+    message:stock===0?result.rows[0].name+' is now out of stock. Update its quantity when inventory is replenished.':result.rows[0].name+' has only '+stock+' item(s) left. Consider replenishing your inventory.',
+    target_tab:'products',dedupe_key:'seller-stock-alert:'+id+':'+new Date().toISOString().slice(0,10),
+    metadata:{product_id:id,stock_qty:stock}
+  });
+  return {product:result.rows[0]};
+}
+
+async function bulkSaveProducts(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  await getSellerByUser(db,user.id,true);
+  const items=Array.isArray(body.products)?body.products:[];
+  if(!items.length||items.length>30) throw new HttpError(400,'Import between 1 and 30 products per CSV upload.');
+  const imported=[],errors=[];
+  for(let i=0;i<items.length;i++) {
+    try {
+      if(!items[i]||typeof items[i]!=='object'||Array.isArray(items[i])) throw new HttpError(400,'Invalid product row.');
+      const result=await saveProduct(db,req,items[i]);
+      imported.push({row:i+2,id:result.product.id,name:result.product.name,status:result.product.status});
+    } catch(error) {
+      errors.push({row:i+2,message:error.status?error.message:'This row could not be imported.'});
+    }
+  }
+  await audit(db,user.id,'PRODUCTS_BULK_IMPORTED','seller',user.id,{imported:imported.length,failed:errors.length});
+  return {imported:imported.length,failed:errors.length,products:imported,errors};
+}
 async function checkout(db, req, body) {
   if (!process.env.PAYSTACK_SECRET_KEY) throw new HttpError(503,'Secure checkout is being connected. Marketplace browsing and seller registration are available, but payment is not enabled yet.');
   const user = await requireRole(req, db, ['buyer','seller','admin','super_admin']);
@@ -1586,7 +1652,10 @@ async function adminOverview(db,req) {
     db.query("SELECT count(*) AS count,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding FROM market_payouts"),
     db.query(`SELECT o.id,o.order_number,o.buyer_email,o.total_kobo,o.payment_status,o.status,o.created_at FROM market_orders o ORDER BY o.created_at DESC LIMIT 8`)
   ]);
-  return {orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows};
+  return {
+    orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows,
+    integrations:{paystack_configured:!!process.env.PAYSTACK_SECRET_KEY,media_uploads_configured:!!process.env.BLOB_READ_WRITE_TOKEN,payout_encryption_configured:!!fieldKey()}
+  };
 }
 
 async function adminList(db,req,kind) {
@@ -1833,6 +1902,8 @@ async function handle(db,req,res,body) {
   if(action==='seller.dashboard') return sellerDashboard(db,req);
   if(action==='seller.profile') return saveSellerProfile(db,req,body);
   if(action==='seller.product.save') return saveProduct(db,req,body);
+  if(action==='seller.inventory.update') return updateSellerInventory(db,req,body);
+  if(action==='seller.products.bulk') return bulkSaveProducts(db,req,body);
   if(action==='seller.fulfill') return sellerFulfill(db,req,body);
   if(action==='buyer.orders') return buyerOrders(db,req);
   if(action==='buyer.confirm-delivery') return buyerConfirmDelivery(db,req,body);
