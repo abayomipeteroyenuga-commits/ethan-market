@@ -288,7 +288,7 @@ async function showStore(slug) {
 }
 function openCheckout() {
   if (!state.cart.length) return;
-  if (!state.config.payments_enabled) { notify('Your bag is saved. Secure checkout will open once Paystack is configured.'); return; }
+  if (!state.config.payments_enabled) { notify('Your bag is saved. Secure checkout will open once Monnify is configured.'); return; }
   if (!state.user) { closeCart(); openAuth('login','Sign in or create an account before checkout.'); return; }
   const physical = hasPhysical();
   $('#checkout-address').required = physical; $('#checkout-city').required = physical; $('#checkout-state').required = physical;
@@ -593,7 +593,7 @@ function renderAdminIntegrations(data) {
   const items=data.integrations||{};
   const line=(title,ready,detail)=>'<div class="integration-check"><span class="integration-mark '+(ready?'ready':'blocked')+'">'+(ready?'✓':'!')+'</span><div><strong>'+title+'</strong><small>'+detail+'</small></div><span class="status-pill '+(ready?'approved':'pending')+'">'+(ready?'Ready':'Action required')+'</span></div>';
   return '<div class="dash-panel integration-readiness"><h3>Marketplace launch readiness</h3><p class="modal-intro">Configuration checks for the services that support selling, media and seller settlement.</p>'+
-    line('Secure checkout',!!items.paystack_configured,items.paystack_configured?'Paystack secret key is present. Run a live test transaction before announcing checkout.':'Checkout is disabled until PAYSTACK_SECRET_KEY is added to the Vercel production environment.')+
+    line('Secure checkout',!!items.monnify_configured,items.monnify_configured?'Monnify credentials and contract code are configured ('+(items.payment_environment||'Sandbox')+'). Run a successful test transaction before announcing checkout.':'Checkout is disabled until MONNIFY_API_KEY, MONNIFY_SECRET_KEY and MONNIFY_CONTRACT_CODE are added to Vercel.')+
     line('Product image storage',!!items.media_uploads_configured,items.media_uploads_configured?'Product media uploads are configured.':'Add BLOB_READ_WRITE_TOKEN to enable product image uploads.')+
     line('Payout data encryption',!!items.payout_encryption_configured,items.payout_encryption_configured?'Sensitive seller payout fields can be encrypted.':'Add MARKET_FIELD_ENCRYPTION_KEY before collecting or updating seller bank details.')+'</div>';
 }
@@ -618,7 +618,7 @@ function renderAdminTab(tab,data) {
     renderAdminGrowth(data);
   } else if(tab==='settings') {
     const settings=data.settings||{};
-    el.innerHTML=`<div class="dash-panel"><h3>Marketplace settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Default seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||1000)/100).toFixed(1)}"></div><div class="form-field"><label for="market-shipping">Default physical delivery fee (₦)</label><input id="market-shipping" type="number" min="0" step="100" value="${Number(settings.physical_shipping_kobo||200000)/100}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form></div><div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Paystack checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add your Paystack secret key to the Vercel project environment to activate initialize, verify and webhook payments. Never put the secret key in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
+    el.innerHTML=`<div class="dash-panel"><h3>Marketplace settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Default seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||1000)/100).toFixed(1)}"></div><div class="form-field"><label for="market-shipping">Default physical delivery fee (₦)</label><input id="market-shipping" type="number" min="0" step="100" value="${Number(settings.physical_shipping_kobo||200000)/100}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form></div><div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Monnify checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add the Monnify API key, secret key and contract code to the Vercel project environment. Never put payment credentials in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
   }
 }
 function renderCompareToolbar() {
@@ -1042,15 +1042,15 @@ async function applyCheckoutPromo() {
 }
 async function submitCheckout(e){
   e.preventDefault();$('#checkout-error').textContent='';
-  if(!state.config.payments_enabled){$('#checkout-error').textContent='Paystack checkout has not been activated yet. Your cart is saved; please try again later.';return;}
+  if(!state.config.payments_enabled){$('#checkout-error').textContent='Monnify checkout has not been activated yet. Your cart is saved; please try again later.';return;}
   const button=$('#checkout-form button[type=submit]');button.disabled=true;
   const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
-  try{const result=await api('checkout.create',payload);window.location.href=result.authorization_url;}
+  try{const result=await api('checkout.create',payload);window.location.href=result.checkout_url;}
   catch(err){$('#checkout-error').textContent=err.message;button.disabled=false;}
 }
 async function verifyPaymentFromUrl(){
   const params=new URLSearchParams(location.search);if(params.get('payment')!=='verify')return;
-  const reference=params.get('reference');
+  const reference=params.get('reference')||params.get('paymentReference')||params.get('payment_reference');
   if(!reference){notify('No payment reference was returned.');return;}
   if(!state.user){openAuth('login','Sign in with the account used for this order to confirm the payment.');return;}
   try{const result=await api('payment.verify',{reference});state.cart=[];saveCart();renderCart();history.replaceState({},'',location.pathname);notify(`Payment confirmed. Order ${result.order.order_number} is paid.`);openDashboard('orders');}
@@ -1060,7 +1060,7 @@ async function logout(){try{await api('auth.logout');}catch{}if(state.notificati
 async function adminAction(el){
   const action=el.dataset.adminAction;const id=el.dataset.id;const status=el.dataset.status;let payload={id,status};
   if(action==='product-status' && el.dataset.featured) payload.featured=el.dataset.featured==='true';
-  if(action==='payout-status'&&status==='paid') {const ref=prompt('Enter the bank transfer / Paystack payout reference. Do not mark this paid until the transfer has cleared.');if(ref===null)return;payload.payout_reference=ref.trim();if(!payload.payout_reference){notify('A payout reference is required.');return;}}
+  if(action==='payout-status'&&status==='paid') {const ref=prompt('Enter the bank transfer / payment-provider payout reference. Do not mark this paid until the transfer has cleared.');if(ref===null)return;payload.payout_reference=ref.trim();if(!payload.payout_reference){notify('A payout reference is required.');return;}}
   el.disabled=true;
   try{await api('admin.'+action,payload);notify('Marketplace record updated.');loadDashboardTab();}
   catch(e){notify(e.message);el.disabled=false;}
