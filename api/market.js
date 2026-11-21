@@ -931,7 +931,12 @@ async function sellerDashboard(db, req) {
       JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id])
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
-  return { seller: sellerPublic(seller), products: products.rows, orders: orders.rows, payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0] };
+  const growthProfile = await ensureGrowthProfile(db,user.id);
+  return {
+    seller: sellerPublic(seller), products: products.rows, orders: orders.rows,
+    payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
+    referral_url: 'https://market.ethandigitalacademy.org/?ref=' + encodeURIComponent(growthProfile.referral_code)
+  };
 }
 
 function sellerPublic(s) {
