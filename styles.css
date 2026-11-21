@@ -67,3 +67,13 @@
 
 /* Seller studio product inventory thumbnails */
 .seller-product-cell{display:flex;align-items:center;gap:10px;min-width:180px}.seller-product-cell img{width:44px;height:44px;flex:0 0 44px;object-fit:cover;border-radius:8px;background:#f1f4f8}
+
+
+/* Seller studio add-product image preview */
+.product-image-preview{display:flex;align-items:center;gap:12px;margin-top:10px;padding:10px;border:1px solid #e3eaf0;border-radius:10px;background:#f8fafb}
+.product-image-preview[hidden]{display:none}
+.product-image-preview img{width:88px;height:88px;object-fit:cover;border-radius:8px;background:#edf1f4}
+.product-image-preview .dash-action{flex:0 0 auto}
+#product-form button[type=submit]:disabled{opacity:.65;cursor:wait}
+#product-form input:disabled{background:#f4f6f7;color:#87929a}
+@media(max-width:560px){.product-image-preview{align-items:flex-start;flex-wrap:wrap}.product-image-preview img{width:76px;height:76px}}

@@ -564,34 +564,133 @@ async function submitSellerApplication(e) {
   try {const data=await api('seller.apply',payload);state.seller=data.seller;closeModal('seller-modal');notify('Seller application submitted for review.');openDashboard('sell');}
   catch(err){$('#seller-error').textContent=err.message;} finally{submit.disabled=false;}
 }
+function renderProductImagePreview(url) {
+  const preview=$('#product-image-preview');
+  const image=$('#product-image-preview-img');
+  const clear=$('#product-image-clear');
+  const value=String(url||'').trim();
+  const valid=/^https:\/\//i.test(value);
+  preview.hidden=!valid;
+  clear.hidden=!valid;
+  if(valid){image.src=value;image.alt='Product photo preview';image.onerror=()=>{preview.hidden=true;clear.hidden=true;};}
+  else {image.removeAttribute('src');image.onerror=null;}
+}
 function openProductEditor(product) {
-  $('#product-form').reset(); $('#product-id').value=product?.id||''; $('#product-title').textContent=product?'Edit product.':'Add a product.';
-  if(product){$('#product-name').value=product.name||'';$('#product-category').value=state.categories.find(c=>c.name===product.category_name)?.id||state.categories[0]?.id||'';$('#product-type').value=product.product_type||'physical';$('#product-price').value=Number(product.price_kobo)/100;$('#product-compare').value=product.compare_at_kobo?Number(product.compare_at_kobo)/100:'';$('#product-stock').value=product.stock_qty||1;$('#product-sku').value=product.sku||'';$('#product-image').value=product.image_url||'';$('#product-description').value=product.description||'';$('#digital-url').value=product.digital_delivery_url||'';}
-  updateProductType();showModal('product-modal');
+  $('#product-form').reset();
+  $('#product-id').value=product?.id||'';
+  $('#product-title').textContent=product?'Edit product.':'Add a product.';
+  $('#product-error').textContent='';
+  $('#image-upload-state').textContent='';
+  $('#product-image-file').value='';
+  renderProductImagePreview('');
+  if(product){
+    $('#product-name').value=product.name||'';
+    $('#product-category').value=state.categories.find(c=>c.name===product.category_name)?.id||state.categories[0]?.id||'';
+    $('#product-type').value=product.product_type||'physical';
+    $('#product-price').value=Number(product.price_kobo)/100;
+    $('#product-compare').value=product.compare_at_kobo?Number(product.compare_at_kobo)/100:'';
+    $('#product-stock').value=product.stock_qty||1;
+    $('#product-sku').value=product.sku||'';
+    $('#product-image').value=product.image_url||'';
+    $('#product-description').value=product.description||'';
+    $('#digital-url').value=product.digital_delivery_url||'';
+  }
+  renderProductImagePreview($('#product-image').value);
+  updateProductType();
+  showModal('product-modal');
+  setTimeout(()=>$('#product-name').focus({preventScroll:true}),0);
 }
-function updateProductType(){const isDigital=$('#product-type').value==='digital';$('#product-stock-wrap').hidden=isDigital;$('#digital-url-wrap').hidden=!isDigital;$('#product-stock').required=!isDigital;}
+function updateProductType(){
+  const isDigital=$('#product-type').value==='digital';
+  $('#product-stock-wrap').hidden=isDigital;
+  $('#digital-url-wrap').hidden=!isDigital;
+  $('#product-stock').required=!isDigital;
+  $('#product-stock').disabled=isDigital;
+  if(isDigital)$('#product-stock').value=0;
+  else if(!Number($('#product-stock').value))$('#product-stock').value=1;
+}
 async function uploadProductImage(e){
-  const file=e.target.files?.[0]; if(!file)return;
-  const stateEl=$('#image-upload-state'); stateEl.textContent='Preparing secure upload…';
-  const allowed=['image/jpeg','image/png','image/webp','image/avif'];
-  if(!allowed.includes(file.type)){stateEl.textContent='Choose a JPG, PNG, WebP or AVIF image.';e.target.value='';return;}
-  if(file.size>2.5*1024*1024){stateEl.textContent='Image is too large. Maximum size is 2.5 MB.';e.target.value='';return;}
+  const file=e.target.files?.[0];
+  if(!file)return;
+  const stateEl=$('#image-upload-state');
+  const button=$('#product-form button[type=submit]');
+  const allowed={'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/avif':'avif'};
+  const extension=(file.name.split('.').pop()||'').toLowerCase();
+  const mime=allowed[file.type]?file.type:Object.keys(allowed).find(type=>allowed[type]===extension);
+  if(!mime){stateEl.textContent='Choose a JPG, PNG, WebP or AVIF image.';e.target.value='';return;}
+  if(file.size<1||file.size>2.5*1024*1024){stateEl.textContent='Choose an image smaller than 2.5 MB.';e.target.value='';return;}
+  button.disabled=true;
+  stateEl.textContent='Uploading your product photo securely…';
   try{
-    const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Could not read image.'));reader.readAsDataURL(file);});
+    const dataUrl=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(reader.result);
+      reader.onerror=()=>reject(new Error('Could not read this image. Please choose it again.'));
+      reader.readAsDataURL(file);
+    });
     const match=String(dataUrl).match(/^data:(image\/(?:jpeg|png|webp|avif));base64,([A-Za-z0-9+/=]+)$/);
-    if(!match)throw new Error('Image file could not be prepared.');
-    const response=await fetch('/api/market-upload',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_name:file.name,mime_type:match[1],base64:match[2]})});
-    const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'Image upload failed.');
-    $('#product-image').value=result.data.url;stateEl.textContent='Photo uploaded successfully.';
-  }catch(err){stateEl.textContent=err.message;}
+    if(!match)throw new Error('The selected image could not be prepared. Try another photo.');
+    const response=await fetch('/api/market-upload',{
+      method:'POST',credentials:'same-origin',cache:'no-store',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({file_name:file.name,mime_type:mime,base64:match[2]})
+    });
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(result.error||'Photo upload failed. Please try again.');
+    const url=result.data?.url;
+    if(!url||!/^https:\/\//i.test(url))throw new Error('The image service did not return a valid photo URL.');
+    $('#product-image').value=url;
+    renderProductImagePreview(url);
+    stateEl.textContent='Photo uploaded and attached to this product.';
+  }catch(err){
+    stateEl.textContent=err.message||'Photo upload failed.';
+    e.target.value='';
+  }finally{
+    button.disabled=false;
+  }
 }
-
 async function submitProduct(e){
-  e.preventDefault();$('#product-error').textContent='';
-  const payload={id:$('#product-id').value,name:$('#product-name').value,category_id:$('#product-category').value,product_type:$('#product-type').value,price_kobo:nairaToKobo($('#product-price').value),compare_at_kobo:nairaToKobo($('#product-compare').value)||null,stock_qty:Number($('#product-stock').value),sku:$('#product-sku').value,image_url:$('#product-image').value,description:$('#product-description').value,digital_delivery_url:$('#digital-url').value};
-  const button=$('#product-form button[type=submit]');button.disabled=true;
-  try{await api('seller.product.save',payload);closeModal('product-modal');notify('Product sent to marketplace review.');state.dashboardTab='products';loadDashboardTab();}
-  catch(err){$('#product-error').textContent=err.message;}finally{button.disabled=false;}
+  e.preventDefault();
+  const error=$('#product-error');
+  const button=$('#product-form button[type=submit]');
+  const form=$('#product-form');
+  error.textContent='';
+  if(!form.reportValidity())return;
+  const name=$('#product-name').value.trim();
+  const categoryId=$('#product-category').value;
+  const type=$('#product-type').value;
+  const price=Number($('#product-price').value);
+  const compare=Number($('#product-compare').value||0);
+  const stock=Number($('#product-stock').value);
+  const imageUrl=$('#product-image').value.trim();
+  const digitalUrl=$('#digital-url').value.trim();
+  if(name.length<3){error.textContent='Enter a product name with at least 3 characters.';$('#product-name').focus();return;}
+  if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
+  if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
+  if(compare>0&&compare<=price){error.textContent='Previous price must be higher than the selling price.';$('#product-compare').focus();return;}
+  if(type==='physical'&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
+  if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
+  if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
+  const payload={
+    id:$('#product-id').value,name,category_id:categoryId,product_type:type,
+    price_kobo:nairaToKobo(price),compare_at_kobo:compare?nairaToKobo(compare):null,
+    stock_qty:type==='digital'?0:stock,sku:$('#product-sku').value.trim(),
+    image_url:imageUrl,description:$('#product-description').value.trim(),digital_delivery_url:digitalUrl
+  };
+  button.disabled=true;
+  button.textContent='Submitting product…';
+  try{
+    const result=await api('seller.product.save',payload);
+    closeModal('product-modal');
+    state.dashboardTab='products';
+    await loadDashboardTab();
+    notify(result?.product?.status==='pending'?'Product submitted. It will appear in your store after approval.':'Product saved successfully.');
+  }catch(err){
+    error.textContent=err.message||'Product could not be saved. Please try again.';
+  }finally{
+    button.disabled=false;
+    button.innerHTML='Submit product for review <span>→</span>';
+  }
 }
 async function submitAuth(e){
   e.preventDefault();
@@ -826,7 +925,14 @@ $('#auth-email').addEventListener('input',updateOwnerTokenVisibility);
 $('#seller-form').addEventListener('submit',submitSellerApplication);
 $('#product-form').addEventListener('submit',submitProduct);
 $('#product-type').addEventListener('change',updateProductType);
-$('#product-image-file').addEventListener('change', uploadProductImage);
+$('#product-image-file').addEventListener('change',uploadProductImage);
+$('#product-image').addEventListener('input',e=>renderProductImagePreview(e.target.value));
+$('#product-image-clear').addEventListener('click',()=>{
+  $('#product-image').value='';
+  $('#product-image-file').value='';
+  $('#image-upload-state').textContent='Photo removed. You can upload another image.';
+  renderProductImagePreview('');
+});
 $('#checkout-form').addEventListener('submit',submitCheckout);
 $('#checkout-apply-promo').addEventListener('click',applyCheckoutPromo);
 $('#dashboard-content').addEventListener('submit',async e=>{
