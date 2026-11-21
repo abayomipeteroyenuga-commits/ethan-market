@@ -1550,6 +1550,7 @@ async function checkout(db, req, body) {
       }
     });
     if (!gateway?.checkoutUrl) throw new HttpError(502,'Monnify did not return a secure checkout link.');
+    if (String(gateway.paymentReference||'')!==order.reference) throw new HttpError(502,'Monnify returned a checkout reference that does not match this order.');
     await db.query("UPDATE market_payments SET gateway_payload=$2::jsonb WHERE reference=$1 AND provider='monnify'",[order.reference,JSON.stringify({transactionReference:gateway.transactionReference||'',paymentReference:order.reference})]);
     return { checkout_url:gateway.checkoutUrl,reference:order.reference,order_number:order.order_number,total_kobo:order.total_kobo };
   } catch (error) {
