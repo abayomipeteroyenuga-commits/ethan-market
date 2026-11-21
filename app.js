@@ -225,7 +225,7 @@ function changeQuantity(productId,delta,variantId='') {
   const variant=variantId?(product?.variants||[]).find(v=>v.id===variantId):null;
   const max=product?.product_type==='physical'?Number(variant?variant.stock_qty:product.stock_qty):20;
   const next=item.quantity+delta;
-  if(next>max){notify('You have reached the available stock for this option.');return;}
+  if(delta>0&&next>max){notify('You have reached the available stock for this option.');return;}
   if(next<=0)state.cart=state.cart.filter(x=>!(x.product_id===productId&&(x.variant_id||'')===(variantId||'')));
   else item.quantity=next;
   saveCart();renderCart();
@@ -633,7 +633,7 @@ function renderSellerProductsPanel(data) {
   }).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6);
   return '<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products and inventory</h3><p class="modal-intro">Update stock without taking a live listing offline. Product content edits still go through review.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div>'+
     '<div class="metric-grid">'+renderMetric('Published',counts.active)+renderMetric('Awaiting review',counts.pending)+renderMetric('Drafts',counts.draft)+renderMetric('Low / out of stock',low.length)+'</div>'+
-    (low.length?'<div class="inventory-warning"><strong>'+low.length+' product(s) need stock attention</strong><span>'+low.slice(0,5).map(p=>html(p.name)+' ('+Number(p.stock_qty||0)+')').join(' · ')+'</span></div>':'')+
+    (low.length?'<div class="inventory-warning"><strong>'+low.length+' product(s) need stock attention</strong><span>'+low.slice(0,5).map(p=>html(p.name)+' ('+(p.variants?.length?p.variants.filter(v=>Number(v.stock_qty)<=5).map(v=>html(v.label)+': '+Number(v.stock_qty)).join(', '):Number(p.stock_qty||0))+')').join(' · ')+'</span></div>':'')+
     '<div class="seller-import-toolbar"><div><strong>Import products in bulk</strong><small>Upload a CSV file with up to 30 product rows. Every new listing is submitted for review.</small></div><div class="dash-actions"><button class="dash-action" id="bulk-import-template" type="button">Download CSV template</button><button class="dash-action primary" id="bulk-import-trigger" type="button">Import CSV</button><input id="bulk-product-file" type="file" accept=".csv,text/csv" hidden></div></div><p class="upload-state" id="bulk-import-status" aria-live="polite"></p>'+
     '<div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock / update</th><th>Status</th><th>Action</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
 }
