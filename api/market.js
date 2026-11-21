@@ -109,6 +109,7 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_product_variants_product_idx ON market_product_variants(product_id,is_active)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS market_product_variants_label_uq ON market_product_variants(product_id,lower(label)) WHERE is_active=true`,
+  `CREATE INDEX IF NOT EXISTS market_product_variants_seller_idx ON market_product_variants(seller_id,product_id,is_active)`,
 
   `CREATE TABLE IF NOT EXISTS market_orders (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_number text NOT NULL UNIQUE,
@@ -230,6 +231,7 @@ const schema = [
   `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_id uuid REFERENCES market_product_variants(id) ON DELETE SET NULL`,
   `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_label text NOT NULL DEFAULT ''`,
   `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_sku text NOT NULL DEFAULT ''`,
+  `CREATE INDEX IF NOT EXISTS market_order_items_variant_idx ON market_order_items(variant_id,created_at DESC) WHERE variant_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS market_order_items_seller_idx ON market_order_items(seller_id, fulfillment_status, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS market_payments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES market_orders(id),
@@ -343,7 +345,13 @@ async function ensureSchema() {
           AND column_name=ANY($1::text[])`,[['variant_id','variant_label','variant_sku']]);
       return Number(result.rows[0]?.count||0)===3;
     };
-    if (await countTables(db) === requiredTables.length && await hasVariantColumns(db)) return;
+    const hasVariantIndexes = async (executor) => {
+      const result=await executor.query(`SELECT COUNT(*)::int AS count FROM pg_indexes
+        WHERE schemaname='public' AND indexname=ANY($1::text[])`,
+        [['market_product_variants_seller_idx','market_order_items_variant_idx']]);
+      return Number(result.rows[0]?.count||0)===2;
+    };
+    if (await countTables(db) === requiredTables.length && await hasVariantColumns(db) && await hasVariantIndexes(db)) return;
 
     // Serialize only a genuine schema bootstrap. Re-check after obtaining the
     // lock in case another cold-start instance completed it while we waited.
@@ -353,7 +361,7 @@ async function ensureSchema() {
     try {
       await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
       locked = true;
-      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client))) {
+      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client)) || !(await hasVariantIndexes(client))) {
         for (const sql of schema) await client.query(sql);
       }
     } finally {
@@ -851,9 +859,10 @@ async function listProducts(db, params = {}) {
        COALESCE(v.variant_count,0)::int AS variant_count,v.from_price_kobo,
        COALESCE(rv.avg_rating,0) AS rating,COALESCE(rv.review_count,0) AS review_count
      FROM market_products p JOIN market_sellers s ON s.id=p.seller_id LEFT JOIN market_categories c ON c.id=p.category_id
-     LEFT JOIN (SELECT product_id,count(*) AS variant_count,
-       min(COALESCE(price_kobo,(SELECT p2.price_kobo FROM market_products p2 WHERE p2.id=market_product_variants.product_id))) AS from_price_kobo
-       FROM market_product_variants WHERE is_active=true GROUP BY product_id) v ON v.product_id=p.id
+     LEFT JOIN (SELECT option.product_id,count(*) AS variant_count,
+       min(COALESCE(option.price_kobo,base.price_kobo)) AS from_price_kobo
+       FROM market_product_variants option JOIN market_products base ON base.id=option.product_id
+       WHERE option.is_active=true GROUP BY option.product_id) v ON v.product_id=p.id
      LEFT JOIN (SELECT product_id,round(avg(rating)::numeric,1) AS avg_rating,count(*) AS review_count FROM market_reviews GROUP BY product_id) rv ON rv.product_id=p.id
      WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT $${values.length}`,
     values
