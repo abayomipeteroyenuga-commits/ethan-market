@@ -119,7 +119,7 @@ Do not commit real secrets or expose Monnify credentials in browser code. See `.
 1. Add the Monnify **test** API key as `MONNIFY_API_KEY` in the Vercel project environment.
 2. Add the matching test secret key as `MONNIFY_SECRET_KEY` and your merchant contract code as `MONNIFY_CONTRACT_CODE`.
 3. Set `MONNIFY_BASE_URL=https://sandbox.monnify.com` while testing. Keep all credentials server-side and encrypted in Vercel.
-4. In the Monnify dashboard, register `https://market.ethandigitalacademy.org/api/market-webhook` as the transaction-completion webhook URL.
+4. In the Monnify dashboard, register `https://market.ethandigitalacademy.org/api/market-webhook` as the transaction-completion webhook URL. Keep the production webhook signature validation enabled; where your hosting firewall supports IP allowlisting, allow Monnify's webhook source IP `35.242.133.146`.
 5. Test a physical order, a digital order, a failed or abandoned payment, a repeated webhook, and an order containing products from more than one seller. Confirm that inventory and seller notifications update only after Monnify confirms payment.
 6. Switch to the live API key, secret and contract code, and set `MONNIFY_BASE_URL=https://api.monnify.com` only after sandbox tests and merchant settlement details have been validated.
 
