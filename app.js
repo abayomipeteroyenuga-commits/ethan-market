@@ -140,8 +140,8 @@ function renderProducts() {
       <div class="product-image"><span class="product-badge">${p.product_type === 'digital' ? 'DIGITAL PRODUCT' : p.featured ? 'FEATURED FIND' : html(p.category_name || 'MARKET FIND')}</span>
         <button class="wishlist-button ${state.wishlist.has(p.id) ? 'saved' : ''}" data-wish="${escAttr(p.id)}" aria-label="${state.wishlist.has(p.id) ? 'Remove from' : 'Add to'} wishlist">${state.wishlist.has(p.id) ? '♥' : '♡'}</button>${imageContent(p)}</div>
       <div class="product-info"><span class="product-category">${html(p.category_name || 'Marketplace')}</span><h3><a class="product-title-link" href="/product/${encodeURIComponent(p.slug||'item')}/${encodeURIComponent(p.id)}">${html(p.name)}</a></h3><span class="seller-name">Sold by <a class="store-link" href="/store/${encodeURIComponent(p.store_slug||'')}">${html(p.store_name || 'Ethan seller')}</a></span>
-        <div class="product-bottom"><strong class="product-price">${money(p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
-        <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button><button class="compare-button ${state.compare.has(p.id)?'selected':''}" data-compare="${escAttr(p.id)}" aria-pressed="${state.compare.has(p.id)}">${state.compare.has(p.id)?'✓ Added':'Compare'}</button></div>
+        <div class="product-bottom"><strong class="product-price">${Number(p.variant_count||0)?'From ':''}${money(p.from_price_kobo||p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
+        <div class="product-card-actions"><button class="add-button" ${Number(p.variant_count||0)?'data-view="'+escAttr(p.id)+'"':'data-add="'+escAttr(p.id)+'"'} ${!Number(p.variant_count||0)&&p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${Number(p.variant_count||0)?'Choose options':p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button><button class="compare-button ${state.compare.has(p.id)?'selected':''}" data-compare="${escAttr(p.id)}" aria-pressed="${state.compare.has(p.id)}">${state.compare.has(p.id)?'✓ Added':'Compare'}</button></div>
       </div>
     </article>`).join('');
   $('#results-count').textContent = `${list.length} product${list.length === 1 ? '' : 's'} found`;
@@ -253,11 +253,18 @@ async function toggleWishlist(productId) {
 }
 async function showProduct(productId) {
   try {
-    const found = state.products.find(p => p.id === productId);
-    if (!found) return;
-    const data = await api('products.detail',{id:productId}); const p = data.product; state.currentProduct = p;
+    const found=state.products.find(p=>p.id===productId);
+    if(!found)return;
+    const data=await api('products.detail',{id:productId}),p=data.product;
+    state.currentProduct=p;
     trackGrowthEvent('product_view');
-    $('#detail-content').innerHTML = `<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug || '')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price">${money(p.price_kobo)}</div><div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span>${Number(p.stock_qty)>0?'In stock':'Check availability'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
+    const variants=p.variants||[];
+    const selected=variants.find(v=>Number(v.stock_qty)>0)||variants[0]||null;
+    const selectedPrice=Number(selected?.price_kobo||p.price_kobo);
+    const selectedStock=selected?Number(selected.stock_qty):Number(p.stock_qty||0);
+    const picker=variants.length?`<div class="form-field detail-variant-picker"><label for="detail-variant-select">Choose size, colour or model *</label><select id="detail-variant-select" data-detail-variant>${variants.map(v=>`<option value="${escAttr(v.id)}" ${selected?.id===v.id?'selected':''}>${html(v.label)}${v.sku?' · '+html(v.sku):''} · ${Number(v.stock_qty)>0?Number(v.stock_qty)+' available':'Out of stock'}</option>`).join('')}</select><small id="detail-variant-stock" aria-live="polite">${selectedStock>0?selectedStock+' available':'This option is out of stock'}</small></div>`:'';
+    const outOfStock=p.product_type==='physical'&&selectedStock<1;
+    $('#detail-content').innerHTML=`<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug||'')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price" id="detail-price">${money(selectedPrice)}</div>${picker}<div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span id="detail-availability">${selectedStock>0?'In stock':'Out of stock'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${outOfStock?'disabled':''}>${outOfStock?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
     showModal('detail-modal');
   } catch(e) { notify(e.message); }
 }
@@ -1031,7 +1038,7 @@ document.addEventListener('click',async e=>{
   if(e.target.closest('#bulk-import-trigger')){$('#bulk-product-file').click();return;}
   if(e.target.closest('#bulk-import-template')){downloadBulkProductTemplate();return;}
   const stockSave=e.target.closest('[data-save-stock]');if(stockSave){const input=$('[data-stock-input="'+stockSave.dataset.saveStock+'"]');const stock=Number(input?.value);if(!Number.isInteger(stock)||stock<0||stock>1000000){notify('Enter a whole-number quantity from 0 to 1,000,000.');return;}stockSave.disabled=true;try{await api('seller.inventory.update',{id:stockSave.dataset.saveStock,stock_qty:stock});notify(stock===0?'Stock updated. Product is now out of stock.':'Inventory quantity updated.');await loadDashboardTab();}catch(error){notify(error.message);}finally{stockSave.disabled=false;}return;}
-  const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){addToCart(detailAdd.dataset.detailAdd);closeModal('detail-modal');return;}
+  const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){addToCart(detailAdd.dataset.detailAdd,$('#detail-variant-select')?.value||'');closeModal('detail-modal');return;}
   const view=e.target.closest('[data-view]');if(view){showProduct(view.dataset.view);return;}
   const store=e.target.closest('[data-store]');if(store){showStore(store.dataset.store);return;}
   const review=e.target.closest('[data-review]');if(review){const rating=Number(prompt('Rate this item from 1 to 5 stars:','5'));if(!Number.isInteger(rating)||rating<1||rating>5){notify('Enter a rating from 1 to 5.');return;}const reviewText=prompt('Write a short review (optional):','')||'';try{await api('reviews.create',{product_id:review.dataset.review,order_id:review.dataset.order,rating,review_text:reviewText});notify('Thank you. Your review has been submitted.');}catch(err){notify(err.message);}return;}
@@ -1092,6 +1099,17 @@ document.addEventListener('click',async e=>{
   if(e.target.classList.contains('modal-backdrop') && !e.target.hidden){closeModal(e.target.id);return;}
 });
 
+document.addEventListener('change',e=>{
+  if(e.target.matches('[data-detail-variant]')){
+    const p=state.currentProduct,variant=(p?.variants||[]).find(v=>v.id===e.target.value);
+    if(!variant)return;
+    const price=Number(variant.price_kobo||p.price_kobo),stock=Number(variant.stock_qty||0),button=$('[data-detail-add]');
+    $('#detail-price').textContent=money(price);
+    $('#detail-variant-stock').textContent=stock>0?stock+' available':'This option is out of stock';
+    $('#detail-availability').textContent=stock>0?'In stock':'Out of stock';
+    if(button){button.disabled=p.product_type==='physical'&&stock<1;button.innerHTML=stock<1?'Out of stock':'Add to bag <span>＋</span>';}
+  }
+});
 $('#search-form').addEventListener('submit',e=>{e.preventDefault();state.query=$('#search-input').value.trim();state.category='all';renderCategories();loadProducts();$('#shop').scrollIntoView({behavior:'smooth'});});
 $('#search-input').addEventListener('input',e=>{if(!e.target.value){state.query='';loadProducts();}});
 $('#filter-chips').addEventListener('click',e=>{const btn=e.target.closest('[data-filter]');if(btn)setFilter(btn.dataset.filter);});
