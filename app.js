@@ -281,7 +281,9 @@ function updateNotificationBadge() {
     if(!dot) { dot=document.createElement('span'); dot.className='notification-dot'; button.appendChild(dot); }
     dot.hidden=state.unreadNotifications<1;
     dot.textContent=state.unreadNotifications>9?'9+':String(state.unreadNotifications);
-    button.setAttribute('aria-label',state.unreadNotifications?(`My account, ${state.unreadNotifications} unread notifications`):'My account');
+    const isAdmin=Boolean(state.user&&['admin','super_admin'].includes(state.user.role));
+    const accountLabel=isAdmin?'Open ETHAN MARKET admin dashboard':state.user?'Open your ETHAN MARKET account':'Open your ETHAN MARKET sign-in';
+    button.setAttribute('aria-label',state.unreadNotifications?(`${accountLabel}, ${state.unreadNotifications} unread notifications`):accountLabel);
   }
 }
 function renderDashboardTabs() {
@@ -496,7 +498,8 @@ function renderMetric(label,value) { return `<div class="metric-card"><small>${h
 function renderAdminTab(tab,data) {
   const el=$('#dashboard-content');
   if(tab==='overview') {
-    el.innerHTML=`<div class="metric-grid">${renderMetric('Paid GMV',money(data.orders?.gmv))}${renderMetric('Paid orders',data.orders?.paid_orders||0)}${renderMetric('Approved stores',data.sellers?.approved||0)}${renderMetric('Pending payouts',money(data.payouts?.outstanding))}</div>
+    el.innerHTML=`<div class="metric-grid">${renderMetric('Paid GMV',money(data.orders?.gmv))}${renderMetric('Paid orders',data.orders?.paid_orders||0)}${renderMetric('Approved stores',data.sellers?.approved||0)}${renderMetric('Pending seller applications',data.sellers?.pending||0)}${renderMetric('Pending payouts',money(data.payouts?.outstanding))}</div>
+      <div class="dash-panel seller-review-queue"><h3>Seller applications awaiting review</h3><p class="modal-intro">${Number(data.sellers?.pending||0)} application(s) are waiting for your decision.</p><button class="dash-action primary" data-dash-tab="sellers">Review seller applications →</button></div>
       <div class="dash-panel"><h3>Recent orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order</th><th>Buyer</th><th>Total</th><th>Payment</th><th>Created</th></tr></thead><tbody>${(data.recent||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong></td><td>${html(o.buyer_email)}</td><td>${money(o.total_kobo)}</td><td>${statusPill(o.payment_status)}</td><td>${formatDate(o.created_at)}</td></tr>`).join('')||tableEmpty('No orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='sellers') {
     el.innerHTML=`<div class="dash-panel"><h3>Seller applications and stores</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Store</th><th>Owner</th><th>Location</th><th>Status</th><th>Actions</th></tr></thead><tbody>${(data.sellers||[]).map(s=>`<tr><td><strong>${html(s.store_name)}</strong><br><small>${html(s.slug)}</small></td><td>${html(s.user_name)}<br>${html(s.email)}</td><td>${html([s.city,s.state].filter(Boolean).join(', ')||'—')}</td><td>${statusPill(s.seller_status)}</td><td><div class="dash-actions">${s.seller_status!=='approved'?`<button class="dash-action primary" data-admin-action="seller-status" data-id="${s.id}" data-status="approved">Approve</button>`:''}${s.seller_status!=='rejected'?`<button class="dash-action danger" data-admin-action="seller-status" data-id="${s.id}" data-status="rejected">Reject</button>`:''}${s.seller_status==='approved'?`<button class="dash-action" data-admin-action="seller-status" data-id="${s.id}" data-status="suspended">Suspend</button>`:''}</div></td></tr>`).join('')||tableEmpty('No seller applications yet.',5)}</tbody></table></div></div>`;
@@ -541,7 +544,7 @@ function renderBuyerWishlist(products) {
   $('#dashboard-content').innerHTML=`<div class="dash-panel"><h3>Your wishlist</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Store</th><th>Price</th><th></th></tr></thead><tbody>${products.map(p=>`<tr><td><strong>${html(p.name)}</strong></td><td>${html(p.store_name)}</td><td>${money(p.price_kobo)}</td><td><button class="dash-action" data-add="${p.id}">Add to bag</button></td></tr>`).join('')||tableEmpty('No saved products yet.',4)}</tbody></table></div></div>`;
 }
 function openSellerApplication() {
-  if(!state.user){openAuth('login','Create an account or sign in before applying to sell.');return;}
+  if(!state.user){openAuth('register','Create your buyer account first. You can submit your seller application after signing in.');return;}
   if(state.seller){if(state.seller.seller_status==='approved'){openDashboard('overview');return;}notify('Your seller application is ' + state.seller.seller_status + '.');openDashboard('sell');return;}
   showModal('seller-modal');
 }
@@ -605,15 +608,35 @@ async function submitAuth(e){
     await refreshSession();
     closeModal('auth-modal');
     notify(registering?'Your ETHAN MARKET account is ready.':'Welcome back.');
-    if(state.user.role==='super_admin'||state.user.role==='admin')openDashboard('overview');
+    if(state.user&&(['super_admin','admin'].includes(state.user.role)))openDashboard('overview');
     else if(state.user.role==='seller')openDashboard('overview');
     await verifyPaymentFromUrl();
   }catch(err){$('#auth-error').textContent=err.message;}finally{button.disabled=false;}
 }
 async function refreshSession(){
-  try{const data=await api('auth.me');state.user=data.user;state.seller=data.seller||null;if(state.user)await syncWishlist();}catch{state.user=null;state.seller=null;}
-  const button=$('#account-button');button.title=state.user?`Signed in as ${state.user.full_name}`:'My account';
-  const label=button.querySelector('.action-label');if(label)label.textContent=state.user?(state.user.role==='super_admin'?'Admin':'Account'):'Account';
+  try {
+    const data=await api('auth.me');
+    state.user=data.user||null;
+    state.seller=data.seller||null;
+  } catch {
+    // Keep a user established by a successful login/register if the session
+    // refresh has a transient network or database error.
+    if(!state.user) state.seller=null;
+  }
+  if(state.user) await syncWishlist();
+  const isAdmin=Boolean(state.user&&['admin','super_admin'].includes(state.user.role));
+  const button=$('#account-button');
+  if(button){
+    button.title=state.user?(isAdmin?'Open your ETHAN MARKET admin dashboard':`Signed in as ${state.user.full_name}`):'Open your ETHAN MARKET account';
+    button.setAttribute('aria-label',isAdmin?'Open admin dashboard':state.user?'Open your account':'Account sign in');
+    const label=button.querySelector('.action-label');
+    if(label) label.textContent=isAdmin?'Admin dashboard':'Account';
+  }
+  const adminButton=$('#admin-dashboard-button');
+  if(adminButton){
+    adminButton.hidden=!isAdmin;
+    adminButton.setAttribute('aria-label','Open ETHAN MARKET admin dashboard');
+  }
   startNotificationPolling();
 }
 async function applyCheckoutPromo() {
@@ -772,7 +795,8 @@ document.addEventListener('click',async e=>{
   const edit=e.target.closest('[data-edit-product]');if(edit){const product=(state.sellerData?.products||[]).find(p=>p.id===edit.dataset.editProduct);if(product)openProductEditor(product);return;}
   if(e.target.closest('#open-cart')){openCart();return;}
   if(e.target.closest('#close-cart')||e.target===$('#drawer-backdrop')){closeCart();return;}
-  if(e.target.closest('#account-button')){return;}
+  if(e.target.closest('#admin-dashboard-button')){e.preventDefault();if(state.user)openDashboard('overview');return;}
+  if(e.target.closest('#account-button')){if(state.user){e.preventDefault();openDashboard();}return;}
   if(e.target.closest('#seller-cta')){openSellerApplication();return;}
   if(e.target.closest('#checkout-button')){openCheckout();return;}
   if(e.target.closest('#logout-button')){logout();return;}
@@ -835,6 +859,7 @@ async function start() {
     location.pathname === '/register' ||
     location.pathname === '/register/' ||
     params.get('auth') === 'register';
+  const requestAdminDashboard = params.get('dashboard') === 'admin';
   if (directRegistration) openAuth('register');
 
   await initPublicData();
@@ -847,9 +872,14 @@ async function start() {
     closeModal('auth-modal');
     openDashboard('overview');
   }
+  if (requestAdminDashboard) {
+    history.replaceState({}, '', location.pathname + location.hash);
+    if (state.user && ['admin','super_admin'].includes(state.user.role)) openDashboard('overview');
+    else notify('Sign in with an authorised marketplace administrator account.');
+  }
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('/sw.js?v=20261120-growth-v1', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=20261121-account-dashboard-v1', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 start();
