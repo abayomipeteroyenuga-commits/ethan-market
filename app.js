@@ -38,7 +38,7 @@ async function trackGrowthEvent(eventType) {
 }
 
 function readCart() {
-  try { const raw = JSON.parse(localStorage.getItem('ethan-market-cart-v1') || '[]'); return Array.isArray(raw) ? raw.filter(x => x && typeof x.product_id === 'string' && Number(x.quantity) > 0) : []; }
+  try { const raw = JSON.parse(localStorage.getItem('ethan-market-cart-v1') || '[]'); return Array.isArray(raw) ? raw.filter(x => x && typeof x.product_id === 'string' && Number.isInteger(Number(x.quantity)) && Number(x.quantity) > 0).map(x=>({...x,variant_id:typeof x.variant_id==='string'?x.variant_id:''})) : []; }
   catch { return []; }
 }
 function saveCart() { try { localStorage.setItem('ethan-market-cart-v1', JSON.stringify(state.cart)); } catch {} }
@@ -88,9 +88,17 @@ function setAuthMode(mode) {
   $('#auth-password').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   $('#auth-error').textContent = '';
 }
-function cartProducts() { return state.cart.map(item => ({ ...item, product: state.products.find(p => p.id === item.product_id) })).filter(item => item.product); }
-function cartCount() { return state.cart.reduce((sum, item) => sum + Number(item.quantity || 0), 0); }
-function cartSubtotal() { return cartProducts().reduce((sum, item) => sum + Number(item.product.price_kobo) * item.quantity, 0); }
+function cartProducts() {
+  return state.cart.map(item=>{
+    const product=state.products.find(p=>p.id===item.product_id);
+    const variant=item.variant_id?(product?.variants||[]).find(v=>v.id===item.variant_id):null;
+    const invalidVariant=Boolean(item.variant_id&&!variant);
+    const requiresVariant=Boolean(product&&(product.variants||[]).length&&!item.variant_id);
+    return {...item,product,variant,invalidVariant,requiresVariant,unit_price_kobo:Number(variant?.price_kobo||product?.price_kobo||0)};
+  }).filter(item=>item.product&&!item.invalidVariant&&!item.requiresVariant);
+}
+function cartCount() { return state.cart.reduce((sum,item)=>sum+Number(item.quantity||0),0); }
+function cartSubtotal() { return cartProducts().reduce((sum,item)=>sum+item.unit_price_kobo*item.quantity,0); }
 function hasPhysical() { return cartProducts().some(x => x.product.product_type === 'physical'); }
 function cartShipping() { return hasPhysical() ? Number(state.config.shipping_kobo || 200000) : 0; }
 function cartTotal() { return cartSubtotal() + cartShipping(); }
@@ -180,26 +188,47 @@ function closeCart() {
   if (!$$('.modal-backdrop').some(m => !m.hidden)) document.body.style.overflow = '';
 }
 function renderCart() {
-  const entries = cartProducts();
+  const entries=cartProducts();
   updateCartCount();
-  $('#cart-subtotal').textContent = money(cartSubtotal());
-  $('#checkout-button').disabled = entries.length === 0;
-  $('#cart-items').innerHTML = entries.length ? entries.map(({product:p,quantity}) => `
-    <div class="cart-line"><div class="cart-thumb">${/^https:\/\//i.test(p.image_url || '') ? `<img src="${escAttr(p.image_url)}" alt="">` : '✧'}</div>
-      <div><strong>${html(p.name)}</strong><small>${money(p.price_kobo)} each · ${p.product_type === 'digital' ? 'Digital' : 'Physical'}</small><div class="quantity-control"><button data-qty="${escAttr(p.id)}" data-delta="-1" aria-label="Decrease quantity">−</button><span>${quantity}</span><button data-qty="${escAttr(p.id)}" data-delta="1" aria-label="Increase quantity">＋</button></div></div>
-      <strong class="cart-line-price">${money(Number(p.price_kobo)*quantity)}</strong></div>`).join('') : `<div class="cart-empty"><span>▢</span><b>Your bag is empty.</b><p>Start exploring and add something you love.</p></div>`;
+  $('#cart-subtotal').textContent=money(cartSubtotal());
+  $('#checkout-button').disabled=entries.length===0;
+  $('#cart-items').innerHTML=entries.length?entries.map(({product:p,variant,variant_id,quantity,unit_price_kobo})=>{
+    return `<div class="cart-line"><div class="cart-thumb">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="">`:'✧'}</div>
+      <div><strong>${html(p.name)}</strong><small>${variant?html(variant.label)+' · ':''}${money(unit_price_kobo)} each · ${p.product_type==='digital'?'Digital':'Physical'}${variant&&variant.sku?' · SKU '+html(variant.sku):''}</small>
+      <div class="quantity-control"><button data-qty="${escAttr(p.id)}" data-variant-id="${escAttr(variant_id||'')}" data-delta="-1" aria-label="Decrease quantity">−</button><span>${quantity}</span><button data-qty="${escAttr(p.id)}" data-variant-id="${escAttr(variant_id||'')}" data-delta="1" aria-label="Increase quantity">＋</button></div></div>
+      <strong class="cart-line-price">${money(unit_price_kobo*quantity)}</strong></div>`;
+  }).join(''):`<div class="cart-empty"><span>▢</span><b>Your bag is empty.</b><p>Start exploring and add something you love.</p></div>`;
 }
-async function addToCart(productId) {
-  let product = state.products.find(p => p.id === productId);
-  if (!product) {
-    try { const result = await api('products.detail', { id: productId }); product = result.product; state.products.push(product); }
-    catch (e) { notify(e.message || 'This product is no longer available.'); return; }
+async function addToCart(productId,variantId='') {
+  let product=state.products.find(p=>p.id===productId);
+  if(!product){
+    try{const result=await api('products.detail',{id:productId});product=result.product;state.products.push(product);}
+    catch(e){notify(e.message||'This product is no longer available.');return;}
   }
-  const row = state.cart.find(x => x.product_id === productId);
-  const maxQuantity = product.product_type === 'physical' ? Math.max(0, Number(product.stock_qty || 0)) : 20;
-  if (maxQuantity < 1) { notify('This product is currently out of stock.'); return; }
-  if (row) { if (Number(row.quantity) >= maxQuantity) { notify('You have reached the available stock for this item.'); return; } row.quantity = Math.min(maxQuantity, Number(row.quantity) + 1); } else state.cart.push({ product_id: productId, quantity: 1 });
-  saveCart(); renderCart(); notify('Added to your shopping bag.');
+  const variants=product.variants||[];
+  const variant=variantId?variants.find(v=>v.id===variantId):null;
+  if(variants.length&&!variantId){notify('Choose a product option before adding it to your bag.');return;}
+  if(variantId&&!variant){notify('This product option is no longer available. Refresh the product.');return;}
+  const maxQuantity=product.product_type==='physical'?Math.max(0,Number(variant?variant.stock_qty:product.stock_qty)||0):20;
+  if(maxQuantity<1){notify('This option is currently out of stock.');return;}
+  const row=state.cart.find(x=>x.product_id===productId&&(x.variant_id||'')===(variantId||''));
+  if(row){
+    if(Number(row.quantity)>=maxQuantity){notify('You have reached the available stock for this option.');return;}
+    row.quantity=Math.min(maxQuantity,Number(row.quantity)+1);
+  }else state.cart.push({product_id:productId,variant_id:variantId||'',quantity:1});
+  saveCart();renderCart();notify('Added to your shopping bag.');
+}
+function changeQuantity(productId,delta,variantId='') {
+  const item=state.cart.find(x=>x.product_id===productId&&(x.variant_id||'')===(variantId||''));
+  if(!item)return;
+  const product=state.products.find(p=>p.id===productId);
+  const variant=variantId?(product?.variants||[]).find(v=>v.id===variantId):null;
+  const max=product?.product_type==='physical'?Number(variant?variant.stock_qty:product.stock_qty):20;
+  const next=item.quantity+delta;
+  if(next>max){notify('You have reached the available stock for this option.');return;}
+  if(next<=0)state.cart=state.cart.filter(x=>!(x.product_id===productId&&(x.variant_id||'')===(variantId||'')));
+  else item.quantity=next;
+  saveCart();renderCart();
 }
 async function hydrateCart() {
   const missing = state.cart.map(x => x.product_id).filter(id => !state.products.some(p => p.id === id));
@@ -894,7 +923,7 @@ async function applyCheckoutPromo() {
   if(!code){feedback.textContent='Enter a promo code first.';return;}
   const button=$('#checkout-apply-promo');button.disabled=true;feedback.textContent='Checking promo code…';
   try {
-    const result=await api('growth.promo-preview',{code,items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity}))});
+    const result=await api('growth.promo-preview',{code,items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity}))});
     state.promoPreview=result;
     $('#checkout-total').textContent=money(result.estimated_total_kobo);
     feedback.textContent=`${result.code} applied — you save ${money(result.discount_kobo)}.`;
@@ -905,7 +934,7 @@ async function submitCheckout(e){
   e.preventDefault();$('#checkout-error').textContent='';
   if(!state.config.payments_enabled){$('#checkout-error').textContent='Paystack checkout has not been activated yet. Your cart is saved; please try again later.';return;}
   const button=$('#checkout-form button[type=submit]');button.disabled=true;
-  const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
+  const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
   try{const result=await api('checkout.create',payload);window.location.href=result.authorization_url;}
   catch(err){$('#checkout-error').textContent=err.message;button.disabled=false;}
 }
