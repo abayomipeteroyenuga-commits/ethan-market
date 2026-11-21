@@ -921,7 +921,7 @@ async function notificationsMarkRead(db, req, body) {
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
-  const [products, orders, payouts, disputes, salesSummary, salesTrend, topProducts] = await Promise.all([
+  const [products, orders, payouts, disputes, salesSummary, salesTrend, topProducts, totalViews] = await Promise.all([
     db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,p.views,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
     db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
@@ -945,14 +945,15 @@ async function sellerDashboard(db, req) {
         COALESCE(SUM(sales.revenue_kobo),0)::text AS revenue_kobo,
         COUNT(sales.order_id)::int AS orders
       FROM generate_series(current_date-interval '13 days',current_date,interval '1 day') AS days(day)
-      LEFT JOIN sales ON sales.sale_day=days.day
+      LEFT JOIN sales ON sales.sale_day=days.day::date
       GROUP BY days.day ORDER BY days.day`,[seller.id]),
     db.query(`SELECT oi.product_id,oi.product_name,
         COALESCE(SUM(oi.unit_price_kobo*oi.quantity),0)::text AS revenue_kobo,
         COALESCE(SUM(oi.quantity),0)::int AS units_sold
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
       WHERE oi.seller_id=$1 AND o.payment_status='paid' AND o.created_at>=now()-interval '30 days'
-      GROUP BY oi.product_id,oi.product_name ORDER BY SUM(oi.unit_price_kobo*oi.quantity) DESC LIMIT 5`,[seller.id])
+      GROUP BY oi.product_id,oi.product_name ORDER BY SUM(oi.unit_price_kobo*oi.quantity) DESC LIMIT 5`,[seller.id]),
+    db.query('SELECT COALESCE(SUM(views),0)::text AS total_views FROM market_products WHERE seller_id=$1',[seller.id])
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
@@ -961,7 +962,7 @@ async function sellerDashboard(db, req) {
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
     analytics: {
       summary: salesSummary.rows[0],
-      total_views: products.rows.reduce((sum,product)=>sum+Number(product.views||0),0),
+      total_views: Number(totalViews.rows[0]?.total_views||0),
       sales_trend: salesTrend.rows,
       top_products: topProducts.rows
     },
