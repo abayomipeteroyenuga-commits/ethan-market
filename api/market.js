@@ -944,7 +944,7 @@ async function askProductQuestion(db,req,body) {
 }
 
 async function answerProductQuestion(db,req,body) {
-  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const user=await requireRole(req,db,['seller']);
   const seller=await getSellerByUser(db,user.id,true);
   const id=text(body.question_id,80),answer=text(body.answer,1000);
   if(answer.length<2) throw new HttpError(400,'Write an answer before submitting.');
