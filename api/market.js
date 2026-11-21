@@ -97,6 +97,19 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_products_public_idx ON market_products(status, category_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_products_seller_idx ON market_products(seller_id, status)`,
+  `CREATE TABLE IF NOT EXISTS market_product_variants (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id uuid NOT NULL REFERENCES market_products(id) ON DELETE CASCADE,
+    seller_id uuid NOT NULL REFERENCES market_sellers(id) ON DELETE CASCADE,
+    label text NOT NULL, sku text NOT NULL DEFAULT '',
+    price_kobo bigint CHECK (price_kobo IS NULL OR price_kobo >= 100),
+    stock_qty int NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_product_variants_product_idx ON market_product_variants(product_id,is_active)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_product_variants_label_uq ON market_product_variants(product_id,lower(label)) WHERE is_active=true`,
+
   `CREATE TABLE IF NOT EXISTS market_orders (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_number text NOT NULL UNIQUE,
     buyer_id uuid NOT NULL REFERENCES market_users(id), buyer_email text NOT NULL,
@@ -214,6 +227,9 @@ const schema = [
     tracking_number text NOT NULL DEFAULT '', tracking_carrier text NOT NULL DEFAULT '', digital_delivery_url text NOT NULL DEFAULT '',
     stock_deducted boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_id uuid REFERENCES market_product_variants(id) ON DELETE SET NULL`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_label text NOT NULL DEFAULT ''`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_sku text NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS market_order_items_seller_idx ON market_order_items(seller_id, fulfillment_status, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS market_payments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES market_orders(id),
@@ -310,7 +326,7 @@ async function ensureSchema() {
     // Check the complete marketplace table set first; only bootstrap when needed.
     const requiredTables = [
       'market_users','market_sessions','market_categories','market_sellers',
-      'market_products','market_orders','market_order_items','market_payments',
+      'market_products','market_product_variants','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
       'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events'
     ];
@@ -321,7 +337,13 @@ async function ensureSchema() {
       );
       return Number(result.rows[0]?.count || 0);
     };
-    if (await countTables(db) === requiredTables.length) return;
+    const hasVariantColumns = async (executor) => {
+      const result=await executor.query(`SELECT COUNT(*)::int AS count FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='market_order_items'
+          AND column_name=ANY($1::text[])`,[['variant_id','variant_label','variant_sku']]);
+      return Number(result.rows[0]?.count||0)===3;
+    };
+    if (await countTables(db) === requiredTables.length && await hasVariantColumns(db)) return;
 
     // Serialize only a genuine schema bootstrap. Re-check after obtaining the
     // lock in case another cold-start instance completed it while we waited.
@@ -331,7 +353,7 @@ async function ensureSchema() {
     try {
       await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
       locked = true;
-      if (await countTables(client) !== requiredTables.length) {
+      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client))) {
         for (const sql of schema) await client.query(sql);
       }
     } finally {
@@ -815,8 +837,12 @@ async function listProducts(db, params = {}) {
   const { rows } = await db.query(
     `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.featured,p.created_at,
        c.name AS category_name,c.slug AS category_slug,s.id AS seller_id,s.store_name,s.slug AS store_slug,s.city,s.state,
+       COALESCE(v.variant_count,0)::int AS variant_count,v.from_price_kobo,
        COALESCE(rv.avg_rating,0) AS rating,COALESCE(rv.review_count,0) AS review_count
      FROM market_products p JOIN market_sellers s ON s.id=p.seller_id LEFT JOIN market_categories c ON c.id=p.category_id
+     LEFT JOIN (SELECT product_id,count(*) AS variant_count,
+       min(COALESCE(price_kobo,(SELECT p2.price_kobo FROM market_products p2 WHERE p2.id=market_product_variants.product_id))) AS from_price_kobo
+       FROM market_product_variants WHERE is_active=true GROUP BY product_id) v ON v.product_id=p.id
      LEFT JOIN (SELECT product_id,round(avg(rating)::numeric,1) AS avg_rating,count(*) AS review_count FROM market_reviews GROUP BY product_id) rv ON rv.product_id=p.id
      WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT $${values.length}`,
     values
@@ -835,7 +861,9 @@ async function productDetail(db, idOrSlug) {
   );
   if (!rows.length) throw new HttpError(404, 'Product not found.');
   await db.query('UPDATE market_products SET views=views+1 WHERE id=$1', [rows[0].id]);
-  return rows[0];
+  const variants=await db.query(`SELECT id,label,sku,price_kobo,stock_qty
+    FROM market_product_variants WHERE product_id=$1 AND is_active=true ORDER BY label`,[rows[0].id]);
+  return {...rows[0],variants:variants.rows};
 }
 
 async function getSellerByUser(db, userId, mustApproved = true) {
@@ -955,6 +983,14 @@ async function sellerDashboard(db, req) {
       GROUP BY oi.product_id,oi.product_name ORDER BY SUM(oi.unit_price_kobo*oi.quantity) DESC LIMIT 5`,[seller.id]),
     db.query('SELECT COALESCE(SUM(views),0)::text AS total_views FROM market_products WHERE seller_id=$1',[seller.id])
   ]);
+  const variants=await db.query(`SELECT id,product_id,label,sku,price_kobo,stock_qty
+    FROM market_product_variants WHERE seller_id=$1 AND is_active=true ORDER BY product_id,label`,[seller.id]);
+  const variantMap=new Map();
+  for(const variant of variants.rows){
+    if(!variantMap.has(variant.product_id))variantMap.set(variant.product_id,[]);
+    variantMap.get(variant.product_id).push(variant);
+  }
+  for(const product of products.rows) product.variants=variantMap.get(product.id)||[];
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
@@ -993,13 +1029,16 @@ async function saveProduct(db, req, body) {
   const description = text(body.description,5000);
   const price = money(body.price_kobo);
   const type = body.product_type === 'digital' ? 'digital' : 'physical';
-  const stock = type === 'digital' ? 999999 : Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
+  const variantsSupplied=Array.isArray(body.variants);
+  const variants=variantsSupplied?body.variants:[];
+  if(type==='digital'&&variants.length) throw new HttpError(400,'Digital products cannot have physical stock variations.');
+  const stock = type === 'digital' ? 999999 : variants.length ? variants.reduce((sum,item)=>sum+Math.max(0,Number(item?.stock_qty)||0),0) : Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
   const imageUrl = text(body.image_url,1000);
   if (name.length < 3 || description.length < 10 || price < 100) throw new HttpError(400,'Add a product name, a useful description and a price of at least ₦1.');
   if (body.compare_at_kobo && money(body.compare_at_kobo) < price) throw new HttpError(400,'The previous price must be higher than the selling price.');
   if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new HttpError(400,'Product image must use a secure HTTPS image URL.');
   if (type === 'digital' && body.digital_delivery_url && !/^https:\/\//i.test(String(body.digital_delivery_url))) throw new HttpError(400,'Digital delivery links must use HTTPS.');
-  if (type === 'physical' && stock < 1) throw new HttpError(400,'A physical product needs at least one item in stock.');
+  if (type === 'physical' && stock < 1 && !variants.length) throw new HttpError(400,'A physical product needs stock, or add variations with their own stock quantities.');
   const category = await db.query('SELECT id FROM market_categories WHERE id::text=$1 OR slug=$1 LIMIT 1',[text(body.category_id,100)]);
   if (!category.rows.length) throw new HttpError(400,'Choose a valid product category.');
   const productId = text(body.id,80);
@@ -1011,6 +1050,7 @@ async function saveProduct(db, req, body) {
       [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
     );
     if (!rows.length) throw new HttpError(404,'Product was not found in your store.');
+    if(variantsSupplied) await syncProductVariants(db,seller.id,productId,variants);
     await audit(db,user.id,'PRODUCT_UPDATED','product',productId);
     return { product: rows[0] };
   }
@@ -1020,8 +1060,48 @@ async function saveProduct(db, req, body) {
      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty`,
     [seller.id,category.rows[0].id,name,slug,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
   );
+  if(variantsSupplied) await syncProductVariants(db,seller.id,rows[0].id,variants);
   await audit(db,user.id,'PRODUCT_SUBMITTED','product',rows[0].id);
   return { product: rows[0] };
+}
+
+async function syncProductVariants(db,sellerId,productId,variants) {
+  if(!Array.isArray(variants)) return null;
+  if(variants.length>30) throw new HttpError(400,'A product can have up to 30 variations.');
+  const cleaned=[],labels=new Set();
+  for(const raw of variants){
+    const label=text(raw?.label,100).trim(),sku=text(raw?.sku,80).trim(),stock=Number(raw?.stock_qty);
+    const price=raw?.price_kobo===null||raw?.price_kobo===''||raw?.price_kobo===undefined?null:money(raw.price_kobo);
+    const id=text(raw?.id,80);
+    if(!label) throw new HttpError(400,'Every variation needs an option label, such as Black / Medium.');
+    if(!Number.isInteger(stock)||stock<0||stock>1000000) throw new HttpError(400,'Variation stock must be a whole number from 0 to 1,000,000.');
+    if(price!==null&&price<100) throw new HttpError(400,'Variation prices must be at least ₦1.');
+    if(id&&!/^[0-9a-f-]{36}$/i.test(id)) throw new HttpError(400,'A variation identifier is invalid.');
+    if(labels.has(label.toLowerCase())) throw new HttpError(400,'Variation labels must be unique within a product.');
+    labels.add(label.toLowerCase());cleaned.push({id,label,sku,stock,price});
+  }
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('UPDATE market_product_variants SET is_active=false,updated_at=now() WHERE product_id=$1 AND seller_id=$2',[productId,sellerId]);
+    for(const variant of cleaned){
+      if(variant.id){
+        const updated=await client.query(`UPDATE market_product_variants SET label=$4,sku=$5,price_kobo=$6,stock_qty=$7,is_active=true,updated_at=now()
+          WHERE id=$1 AND product_id=$2 AND seller_id=$3 RETURNING id`,
+          [variant.id,productId,sellerId,variant.label,variant.sku,variant.price,variant.stock]);
+        if(!updated.rows.length) throw new HttpError(400,'A variation does not belong to this product.');
+      }else{
+        await client.query(`INSERT INTO market_product_variants(product_id,seller_id,label,sku,price_kobo,stock_qty)
+          VALUES($1,$2,$3,$4,$5,$6)`,
+          [productId,sellerId,variant.label,variant.sku,variant.price,variant.stock]);
+      }
+    }
+    const total=cleaned.reduce((sum,item)=>sum+item.stock,0);
+    await client.query('UPDATE market_products SET stock_qty=$3,updated_at=now() WHERE id=$1 AND seller_id=$2',[productId,sellerId,total]);
+    await client.query('COMMIT');
+    return {count:cleaned.length,stock_qty:total};
+  }catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
 }
 
 async function updateSellerInventory(db,req,body) {
@@ -1030,7 +1110,7 @@ async function updateSellerInventory(db,req,body) {
   const id=text(body.id,80);
   const stock=Number(body.stock_qty);
   if(!id||!Number.isInteger(stock)||stock<0||stock>1000000) throw new HttpError(400,'Enter a whole-number stock quantity between 0 and 1,000,000.');
-  const result=await db.query("UPDATE market_products SET stock_qty=$3,updated_at=now() WHERE id=$1 AND seller_id=$2 AND product_type='physical' RETURNING id,name,stock_qty,status",[id,seller.id,stock]);
+  const result=await db.query("UPDATE market_products SET stock_qty=$3,updated_at=now() WHERE id=$1 AND seller_id=$2 AND product_type='physical' AND NOT EXISTS(SELECT 1 FROM market_product_variants v WHERE v.product_id=market_products.id AND v.is_active=true) RETURNING id,name,stock_qty,status",[id,seller.id,stock]);
   if(!result.rows.length) throw new HttpError(404,'Physical product was not found in your store.');
   await audit(db,user.id,'PRODUCT_STOCK_UPDATED','product',id,{stock_qty:stock});
   if(stock<=5) await createNotification(db,user.id,{
