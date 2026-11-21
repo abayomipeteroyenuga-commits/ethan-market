@@ -162,3 +162,13 @@
   .variant-remove{grid-column:span 2;justify-self:start}
   .variant-editor-head{align-items:flex-start;flex-direction:column}
 }
+
+
+/* Variation stock quick-edit controls */
+.variant-stock-list{display:grid;gap:7px;margin-top:8px}
+.variant-stock-row{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:6px 0;border-top:1px solid #edf0f2}
+.variant-stock-row>span{font-size:8px;color:#647686;line-height:1.4}
+.variant-stock-row>div{display:flex;align-items:center;gap:4px;flex:0 0 auto}
+.variant-stock-row input{width:58px;min-height:28px;border:1px solid #dfe5e9;border-radius:5px;padding:4px 5px;font:700 9px 'DM Sans',sans-serif;color:#254058}
+.variant-stock-row .dash-action{padding:6px 7px;font-size:7px}
+.variant-stock-row .dash-action:disabled{opacity:.5;cursor:wait}
