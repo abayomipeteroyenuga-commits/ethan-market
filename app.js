@@ -74,7 +74,7 @@ function updateOwnerTokenVisibility() {
 function setAuthMode(mode) {
   state.authMode = mode;
   if(mode==='register') trackGrowthEvent('signup_view');
-  $('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.authMode === mode));
+  $$('.auth-tab').forEach(b => b.classList.toggle('active', b.dataset.authMode === mode));
   const registering = mode === 'register';
   $('#auth-name-wrap').hidden = !registering;
   $('#auth-name').required = registering;
