@@ -512,7 +512,9 @@ function safeEqual(a, b) {
 }
 
 function monnifyBaseUrl() {
-  return String(process.env.MONNIFY_BASE_URL||'https://sandbox.monnify.com').trim().replace(/\\/$/,'');
+  let value=String(process.env.MONNIFY_BASE_URL||'https://sandbox.monnify.com').trim();
+  while(value.endsWith('/')) value=value.slice(0,-1);
+  return value;
 }
 function monnifyConfigured() {
   return Boolean(process.env.MONNIFY_API_KEY && process.env.MONNIFY_SECRET_KEY &&
