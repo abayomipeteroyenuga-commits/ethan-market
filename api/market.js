@@ -839,8 +839,8 @@ async function listProducts(db, params = {}) {
   if (params.q) { values.push('%' + text(params.q,100).replace(/[%_]/g,'\\$&') + '%'); where.push(`(p.name ILIKE $${values.length} OR p.description ILIKE $${values.length} OR s.store_name ILIKE $${values.length})`); }
   if (params.featured === 'true') where.push('p.featured=true');
   let order = 'p.featured DESC,p.created_at DESC';
-  if (params.sort === 'price-asc') order = 'p.price_kobo ASC,p.created_at DESC';
-  if (params.sort === 'price-desc') order = 'p.price_kobo DESC,p.created_at DESC';
+  if (params.sort === 'price-asc') order = 'COALESCE(v.from_price_kobo,p.price_kobo) ASC,p.created_at DESC';
+  if (params.sort === 'price-desc') order = 'COALESCE(v.from_price_kobo,p.price_kobo) DESC,p.created_at DESC';
   if (params.sort === 'popular') order = 'p.views DESC,p.created_at DESC';
   const limit = Math.min(Math.max(Number(params.limit) || 24, 1), 60);
   values.push(limit);
