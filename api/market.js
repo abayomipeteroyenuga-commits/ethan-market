@@ -570,12 +570,39 @@ async function growthDashboard(db,req) {
      JOIN market_users u ON u.id=a.referred_user_id WHERE a.referrer_user_id=$1
      ORDER BY a.created_at DESC LIMIT 20`,[user.id]
   );
+  let store=null, products=[];
+  if(user.role==='seller') {
+    const sellerResult=await db.query(
+      'SELECT id,store_name,slug,seller_status FROM market_sellers WHERE user_id=$1 LIMIT 1',
+      [user.id]
+    );
+    if(sellerResult.rows[0]) {
+      const seller=sellerResult.rows[0];
+      store={
+        store_name:seller.store_name,slug:seller.slug,seller_status:seller.seller_status,
+        url:seller.seller_status==='approved'?'https://market.ethandigitalacademy.org/store/'+encodeURIComponent(seller.slug):''
+      };
+      if(seller.seller_status==='approved') {
+        const productResult=await db.query(
+          `SELECT id,name,slug,price_kobo FROM market_products
+           WHERE seller_id=$1 AND status='active'
+           ORDER BY featured DESC,created_at DESC LIMIT 12`,
+          [seller.id]
+        );
+        products=productResult.rows.map(p=>({
+          ...p,
+          url:'https://market.ethandigitalacademy.org/product/'+encodeURIComponent(p.slug||p.id)+'/'+encodeURIComponent(p.id)
+        }));
+      }
+    }
+  }
   return {
     referral_code:profile.referral_code,
     referral_url:'https://market.ethandigitalacademy.org/?ref='+encodeURIComponent(profile.referral_code),
     affiliate_status:profile.affiliate_status,
     affiliate_commission_bps:Number(profile.affiliate_commission_bps||0),
-    referrals:referrals.rows[0],conversions:conversions.rows[0],recent:recent.rows
+    referrals:referrals.rows[0],conversions:conversions.rows[0],recent:recent.rows,
+    store,products
   };
 }
 
