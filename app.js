@@ -384,13 +384,31 @@ function renderGrowthDashboard(data) {
   const referrals=data.referrals||{},conversions=data.conversions||{};
   const status=data.affiliate_status||'none';
   const recent=(data.recent||[]).map(r=>`<tr><td>${html(r.full_name)}</td><td>${statusPill(r.status)}</td><td>${formatDate(r.created_at)}</td></tr>`).join('')||tableEmpty('No one has joined from your link yet.',3);
+  const inviteText=`Join me on ETHAN MARKET to discover products from independent sellers: ${data.referral_url}`;
   const apply=status==='none'||status==='paused'
     ? '<button class="button button-primary" id="affiliate-apply">Apply to become an ETHAN affiliate</button>'
     : status==='pending'?'<span class="status-pill pending">Affiliate application pending review</span>':'<span class="status-pill approved">Approved affiliate</span>';
+  const store=data.store||null;
+  const sellerMarketing=store
+    ? store.seller_status==='approved'
+      ? `<div class="dash-panel seller-marketing-panel">
+          <h3>Promote your ETHAN MARKET store</h3>
+          <p class="modal-intro">Your public store link is ready. Share it with customers on WhatsApp, Instagram, Facebook and anywhere your business connects with buyers.</p>
+          <div class="growth-link-row"><input aria-label="Your public store link" readonly value="${escAttr(store.url)}"><button class="dash-action primary" data-growth-copy="${escAttr(store.url)}">Copy store link</button></div>
+          <div class="growth-share-actions"><button class="dash-action primary" data-share-url="${escAttr(store.url)}" data-share-text="${escAttr('Shop '+store.store_name+' on ETHAN MARKET. Discover the store and its products:')}">Share store</button><button class="dash-action" data-share-url="${escAttr(store.url)}" data-share-channel="whatsapp" data-share-text="${escAttr('Shop '+store.store_name+' on ETHAN MARKET. Discover the store and its products:')}">Share on WhatsApp</button><a class="dash-action" href="${escAttr(store.url)}" target="_blank" rel="noopener">View store ↗</a></div>
+          <h4 class="seller-marketing-subtitle">Share your live products</h4>
+          <div class="seller-marketing-products">${(data.products||[]).map(p=>{
+            const productMessage='Take a look at '+p.name+' from '+store.store_name+' on ETHAN MARKET:';
+            return `<article class="seller-marketing-product"><div><strong>${html(p.name)}</strong><small>${money(p.price_kobo)}</small></div><div class="growth-share-actions"><button class="dash-action" data-growth-copy="${escAttr(p.url)}">Copy link</button><button class="dash-action primary" data-share-url="${escAttr(p.url)}" data-share-text="${escAttr(productMessage)}">Share</button></div></article>`;
+          }).join('')||'<p class="modal-intro">Your approved products will appear here when they are published.</p>'}</div>
+        </div>`
+      : `<div class="dash-panel seller-marketing-panel"><h3>Your store marketing tools</h3><p class="modal-intro">Your seller application is currently ${html(store.seller_status)}. Your public store link and product promotion tools will appear here once the marketplace team approves your store.</p></div>`
+    : '';
   $('#dashboard-content').innerHTML=`<div class="dash-panel">
     <h3>Your personal ETHAN MARKET invite link</h3>
-    <p class="modal-intro">Share this link with customers and business owners. We record new accounts, first purchases and sellers approved through your referral.</p>
+    <p class="modal-intro">Invite friends, customers and business owners. Your referral link helps ETHAN MARKET measure new accounts, first purchases and approved sellers.</p>
     <div class="growth-link-row"><input aria-label="Your referral link" readonly value="${escAttr(data.referral_url)}"><button class="dash-action primary" data-growth-copy="${escAttr(data.referral_url)}">Copy link</button></div>
+    <div class="growth-share-actions"><button class="dash-action primary" data-share-url="${escAttr(data.referral_url)}" data-share-text="${escAttr(inviteText)}">Share invite</button><button class="dash-action" data-share-url="${escAttr(data.referral_url)}" data-share-channel="whatsapp" data-share-text="${escAttr(inviteText)}">Share on WhatsApp</button></div>
     <div class="metric-grid">
       ${renderMetric('Sign-ups',referrals.signups||0)}
       ${renderMetric('First purchases',referrals.first_orders||0)}
@@ -398,6 +416,7 @@ function renderGrowthDashboard(data) {
       ${renderMetric('Affiliate sales',money(conversions.sales_kobo||0))}
     </div>
   </div>
+  ${sellerMarketing}
   <div class="dash-panel"><h3>ETHAN affiliate programme</h3>
     <p class="modal-intro">Approved affiliates earn a share of ETHAN MARKET's marketplace fee on eligible paid orders they refer. Seller earnings are not reduced by affiliate rewards. Rewards are reviewed and paid manually; there are no automatic transfers.</p>
     <div class="growth-affiliate-summary">
@@ -411,6 +430,11 @@ function renderGrowthDashboard(data) {
     </div>
   </div>
   <div class="dash-panel"><h3>Referral activity</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>New member</th><th>Milestone</th><th>Joined</th></tr></thead><tbody>${recent}</tbody></table></div></div>`;
+}
+function marketingCopyMessage(kind) {
+  const url='https://market.ethandigitalacademy.org/';
+  if(kind==='seller') return 'Do you own a business, sell products or create digital products? Bring your business to ETHAN MARKET, connect with new customers and grow your reach. Start your seller application here: '+url+'#sell';
+  return 'Discover ETHAN MARKET — a marketplace for physical products, digital downloads and independent Nigerian businesses. Explore products, find new stores and shop with confidence: '+url;
 }
 function renderAdminGrowth(data) {
   const s=data.summary||{};
@@ -432,6 +456,14 @@ function renderAdminGrowth(data) {
     ${renderMetric('Marketplace GMV · 30 days',money(s.gmv_30d||0))}
     ${renderMetric('Promo redemptions · 30 days',s.promo_redemptions_30d||0)}
     ${renderMetric('Pending affiliate rewards',s.affiliate_pending||0)}
+  </div>
+  <div class="dash-panel marketing-launch-kit">
+    <h3>ETHAN MARKET launch and sharing kit</h3>
+    <p class="modal-intro">Use these ready-to-share messages to introduce the marketplace to shoppers and invite businesses to sell. For channel-by-channel reporting, create a campaign below and share its tracked link.</p>
+    <div class="marketing-copy-grid">
+      <article><span class="eyebrow">BUYER INVITE</span><h4>Bring shoppers to the market</h4><p>Introduce buyers to products, digital downloads and independent Nigerian stores.</p><div class="growth-share-actions"><button class="dash-action primary" data-marketing-copy="buyer">Copy buyer message</button><button class="dash-action" data-share-url="https://market.ethandigitalacademy.org/" data-share-text="Discover ETHAN MARKET — a marketplace for physical products, digital downloads and independent Nigerian businesses. Explore products and find new stores.">Share marketplace</button></div></article>
+      <article><span class="eyebrow">SELLER INVITE</span><h4>Recruit independent businesses</h4><p>Invite business owners, product sellers and digital creators to apply for a store.</p><div class="growth-share-actions"><button class="dash-action primary" data-marketing-copy="seller">Copy seller message</button><a class="dash-action" href="https://market.ethandigitalacademy.org/#sell" target="_blank" rel="noopener">Open seller section ↗</a></div></article>
+    </div>
   </div>
   <div class="dash-panel"><h3>Create an acquisition campaign</h3><p class="modal-intro">Use the generated link in adverts, WhatsApp posts, influencer campaigns and seller recruitment messages. Traffic, sign-up visits and paid orders are measured against the campaign slug.</p>
     <form class="dash-form" id="growth-campaign-form">
@@ -702,6 +734,28 @@ document.addEventListener('click',async e=>{
   const dashTab=e.target.closest('[data-dash-tab]');if(dashTab){state.dashboardTab=dashTab.dataset.dashTab;loadDashboardTab();return;}
   const notificationOpen=e.target.closest('[data-notification-open]');if(notificationOpen){openNotificationAction(notificationOpen);return;}
   if(e.target.closest('#notifications-mark-all')){markAllNotificationsRead();return;}
+  const share=e.target.closest('[data-share-url]');
+  if(share){
+    const url=share.dataset.shareUrl||'';
+    const message=share.dataset.shareText||'Discover ETHAN MARKET';
+    const payload=message+(url&&!message.includes(url)?' '+url:'');
+    if(share.dataset.shareChannel==='whatsapp'){window.open('https://wa.me/?text='+encodeURIComponent(payload),'_blank','noopener,noreferrer');return;}
+    if(navigator.share){
+      try{await navigator.share({title:'ETHAN MARKET',text:message,url});}
+      catch(error){if(error.name!=='AbortError')notify('Sharing was not available. Copy the link instead.');}
+    } else {
+      try{await navigator.clipboard.writeText(payload);notify('ETHAN MARKET message copied.');}
+      catch{prompt('Copy this ETHAN MARKET message:',payload);}
+    }
+    return;
+  }
+  const marketingCopy=e.target.closest('[data-marketing-copy]');
+  if(marketingCopy){
+    const message=marketingCopyMessage(marketingCopy.dataset.marketingCopy);
+    try{await navigator.clipboard.writeText(message);notify('Marketing message copied.');}
+    catch{prompt('Copy this marketing message:',message);}
+    return;
+  }
   const growthCopy=e.target.closest('[data-growth-copy]');if(growthCopy){try{await navigator.clipboard.writeText(growthCopy.dataset.growthCopy);notify('ETHAN MARKET link copied.');}catch{prompt('Copy your ETHAN MARKET link:',growthCopy.dataset.growthCopy);}return;}
   if(e.target.closest('#affiliate-apply')){try{const r=await api('growth.affiliate-apply');notify(r.status==='pending'?'Affiliate application submitted for review.':'You are already approved.');loadDashboardTab();}catch(error){notify(error.message);}return;}
   const campaignStatus=e.target.closest('[data-growth-campaign-status]');if(campaignStatus){try{await api('admin.growth-campaign-status',{id:campaignStatus.dataset.growthCampaignStatus,status:campaignStatus.dataset.status});notify('Campaign updated.');loadDashboardTab();}catch(error){notify(error.message);}return;}
