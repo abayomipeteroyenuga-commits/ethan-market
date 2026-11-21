@@ -267,7 +267,7 @@ function openDashboard(tab) {
   if (!state.user) { openAuth('login'); return; }
   const role = state.user.role;
   const tabs = role === 'super_admin' || role === 'admin' ? [
-    ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Growth'],['settings','Settings']
+    ['overview','Overview'],['sellers','Sellers'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Growth'],['notifications','Notifications'],['settings','Settings']
   ] : role === 'seller' ? [['overview','Overview'],['products','Products'],['orders','Orders'],['disputes','Disputes'],['payouts','Payouts'],['growth','Grow & refer'],['notifications','Notifications'],['store','Store settings']] : [['orders','My orders'],['wishlist','Wishlist'],['growth','Grow & refer'],['notifications','Notifications'],['sell','Become a seller']];
   state.dashboardTabs = tabs;
   state.dashboardTab = tab || tabs[0][0];
@@ -288,7 +288,7 @@ function updateNotificationBadge() {
 }
 function renderDashboardTabs() {
   if(Array.isArray(state.dashboardTabs)) {
-    $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>`<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${label}${id==='notifications'&&state.unreadNotifications? ` <span class="notification-count">${state.unreadNotifications>99?'99+':state.unreadNotifications}</span>`:''}</button>`).join('');
+    $('#dashboard-tabs').innerHTML = state.dashboardTabs.map(([id,label])=>{const pending=id==='sellers'?Number(state.adminData?.overview?.sellers?.pending||0):0;const caption=id==='sellers'&&pending?`${label} (${pending})`:label;return `<button class="dashboard-tab ${state.dashboardTab===id?'active':''}" data-dash-tab="${id}">${caption}${id==='notifications'&&state.unreadNotifications? ` <span class="notification-count">${state.unreadNotifications>99?'99+':state.unreadNotifications}</span>`:''}</button>`;}).join('');
   }
   updateNotificationBadge();
 }
@@ -306,7 +306,7 @@ async function loadDashboardTab() {
     }
     if (state.user.role === 'super_admin' || state.user.role === 'admin') {
       const data = tab === 'overview' ? await api('admin.overview') : tab === 'settings' ? await api('admin.list',{kind:'settings'}) : await api('admin.list',{kind:tab});
-      state.adminData[tab] = data; renderAdminTab(tab,data); return;
+      state.adminData[tab] = data; renderAdminTab(tab,data); renderDashboardTabs(); return;
     }
     if(tab==='growth' && ['buyer','seller'].includes(state.user.role)) {
       const data=await api('growth.dashboard');renderGrowthDashboard(data);return;
@@ -340,7 +340,7 @@ function renderNotifications(data) {
   updateNotificationBadge();
 }
 async function pollNotifications(announceNew=false) {
-  if(!state.user || !['buyer','seller'].includes(state.user.role)) return;
+  if(!state.user || !['buyer','seller','admin','super_admin'].includes(state.user.role)) return;
   try {
     const data=await api('notifications.list');
     const items=Array.isArray(data.notifications)?data.notifications:[];
@@ -360,7 +360,7 @@ function startNotificationPolling() {
   state.notificationTimer=null;
   state.notificationTopId=null;
   state.unreadNotifications=0;
-  if(!state.user || !['buyer','seller'].includes(state.user.role)) { updateNotificationBadge(); return; }
+  if(!state.user || !['buyer','seller','admin','super_admin'].includes(state.user.role)) { updateNotificationBadge(); return; }
   pollNotifications(false);
   state.notificationTimer=setInterval(()=>pollNotifications(true),30000);
 }

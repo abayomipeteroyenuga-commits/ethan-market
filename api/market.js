@@ -863,6 +863,19 @@ async function applySeller(db, req, body) {
     const referredBy=await db.query('SELECT referral_code FROM market_growth_attributions WHERE referred_user_id=$1',[user.id]);
     await trackGrowthEvent(db,{event_type:'seller_application',user_id:user.id,referral_code:referredBy.rows[0]?.referral_code||''});
     await audit(db,user.id,'SELLER_APPLICATION_SUBMITTED','seller',rows[0].id);
+    // Notify every active marketplace administrator so new applications enter
+    // the owner review queue immediately, without relying on manual refreshes.
+    try {
+      const admins=await db.query("SELECT id FROM market_users WHERE role IN ('admin','super_admin') AND is_active=true");
+      await Promise.all(admins.rows.map(admin=>createNotification(db,admin.id,{
+        type:'seller_application_submitted',
+        title:'New seller application awaiting review',
+        message:`${user.full_name} submitted an application for ${rows[0].store_name}. Review the application in your seller queue.`,
+        target_tab:'sellers',
+        dedupe_key:`seller-application:${rows[0].id}`,
+        metadata:{seller_id:rows[0].id,store_name:rows[0].store_name}
+      }).catch(()=>{})));
+    } catch(error) { console.error('Could not notify marketplace administrators of seller application:',error.message); }
     return { seller: rows[0] };
   } catch(e) { if(e.code==='23505') throw new HttpError(409,'That store address is already in use.'); throw e; }
 }
@@ -872,7 +885,7 @@ async function createNotification(db, userId, fields = {}) {
   const type=text(fields.type,60)||'market_update';
   const title=text(fields.title,140)||'ETHAN MARKET update';
   const message=text(fields.message,500);
-  const targetTab=['orders','products','disputes','payouts','overview','growth'].includes(fields.target_tab)?fields.target_tab:'orders';
+  const targetTab=['orders','products','disputes','payouts','overview','growth','sellers'].includes(fields.target_tab)?fields.target_tab:'orders';
   const dedupeKey=text(fields.dedupe_key,180);
   const metadata=fields.metadata&&typeof fields.metadata==='object'?fields.metadata:{};
   await db.query(
