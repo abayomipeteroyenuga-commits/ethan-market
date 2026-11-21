@@ -1352,8 +1352,15 @@ async function finalizePaid(db, transaction) {
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
       const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,variant_id,quantity',[order.id]);
       for (const row of changed) if (row.product_id) {
-        if(row.variant_id) await client.query('UPDATE market_product_variants SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.variant_id,row.quantity]);
-        await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+        if(row.variant_id){
+          await client.query('UPDATE market_product_variants SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.variant_id,row.quantity]);
+          await client.query(`UPDATE market_products SET stock_qty=CASE
+            WHEN EXISTS(SELECT 1 FROM market_product_variants WHERE product_id=$1 AND is_active=true)
+            THEN COALESCE((SELECT SUM(stock_qty) FROM market_product_variants WHERE product_id=$1 AND is_active=true),0)
+            ELSE stock_qty END,updated_at=now() WHERE id=$1`,[row.product_id]);
+        }else{
+          await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+        }
       }
       const holdSetting=await client.query("SELECT value FROM market_settings WHERE key='seller_payout_hold_days'");
       const holdDays=Math.min(30,Math.max(1,Number(holdSetting.rows[0]?.value)||7));
