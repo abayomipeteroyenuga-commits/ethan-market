@@ -231,11 +231,19 @@ function changeQuantity(productId,delta,variantId='') {
   saveCart();renderCart();
 }
 async function hydrateCart() {
-  const missing = state.cart.map(x => x.product_id).filter(id => !state.products.some(p => p.id === id));
-  await Promise.all(missing.map(async id => {
-    try { const result = await api('products.detail', { id }); if (result.product) state.products.push(result.product); }
-    catch { state.cart = state.cart.filter(x => x.product_id !== id); saveCart(); }
+  const missing=[...new Set(state.cart.map(x=>x.product_id).filter(id=>!state.products.some(p=>p.id===id)))];
+  await Promise.all(missing.map(async id=>{
+    try{const result=await api('products.detail',{id});if(result.product)state.products.push(result.product);}
+    catch{state.cart=state.cart.filter(x=>x.product_id!==id);}
   }));
+  state.cart=state.cart.filter(item=>{
+    const product=state.products.find(p=>p.id===item.product_id);
+    if(!product)return false;
+    const variants=product.variants||[];
+    if(variants.length)return Boolean(item.variant_id&&variants.some(v=>v.id===item.variant_id));
+    return !item.variant_id;
+  });
+  saveCart();renderCart();
 }
 function changeQuantity(productId, delta) {
   const item = state.cart.find(x => x.product_id === productId); if (!item) return;
@@ -1083,7 +1091,7 @@ document.addEventListener('click',async e=>{
   const store=e.target.closest('[data-store]');if(store){showStore(store.dataset.store);return;}
   const review=e.target.closest('[data-review]');if(review){const rating=Number(prompt('Rate this item from 1 to 5 stars:','5'));if(!Number.isInteger(rating)||rating<1||rating>5){notify('Enter a rating from 1 to 5.');return;}const reviewText=prompt('Write a short review (optional):','')||'';try{await api('reviews.create',{product_id:review.dataset.review,order_id:review.dataset.order,rating,review_text:reviewText});notify('Thank you. Your review has been submitted.');}catch(err){notify(err.message);}return;}
   const wish=e.target.closest('[data-wish]');if(wish){toggleWishlist(wish.dataset.wish);return;}
-  const qty=e.target.closest('[data-qty]');if(qty){changeQuantity(qty.dataset.qty,Number(qty.dataset.delta));return;}
+  const qty=e.target.closest('[data-qty]');if(qty){changeQuantity(qty.dataset.qty,Number(qty.dataset.delta),qty.dataset.variantId||'');return;}
   const authMode=e.target.closest('[data-auth-mode]');if(authMode){setAuthMode(authMode.dataset.authMode);return;}
   const dashTab=e.target.closest('[data-dash-tab]');if(dashTab){state.dashboardTab=dashTab.dataset.dashTab;loadDashboardTab();return;}
   const notificationOpen=e.target.closest('[data-notification-open]');if(notificationOpen){openNotificationAction(notificationOpen);return;}
