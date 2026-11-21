@@ -862,11 +862,10 @@ async function start() {
   const requestAdminDashboard = params.get('dashboard') === 'admin';
   if (directRegistration) openAuth('register');
 
-  await initPublicData();
-  await hydrateCart();
+  // Resolve the signed-in role before loading the public catalogue. This ensures
+  // the owner dashboard is not blocked by a slow categories/products request.
   await refreshSession();
   renderCart();
-  await verifyPaymentFromUrl();
 
   if (directRegistration && state.user) {
     closeModal('auth-modal');
@@ -878,8 +877,13 @@ async function start() {
     else notify('Sign in with an authorised marketplace administrator account.');
   }
 
+  // Public shopping data can load after the account workspace is already available.
+  await initPublicData();
+  await hydrateCart();
+  await verifyPaymentFromUrl();
+
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('/sw.js?v=20261121-account-dashboard-v1', { updateViaCache: 'none' }).catch(() => {});
+    navigator.serviceWorker.register('/sw.js?v=20261121-account-dashboard-v2', { updateViaCache: 'none' }).catch(() => {});
   }
 }
 start();
