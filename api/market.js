@@ -671,11 +671,21 @@ async function growthPromoPreview(db,req,body) {
      JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved'`,[ids]
   );
   if(rows.length!==ids.length) throw new HttpError(409,'One or more products are no longer available.');
+  const productMap=new Map(rows.map(product=>[product.id,product]));
+  const {rows:variants}=await db.query(`SELECT id,product_id,label,price_kobo FROM market_product_variants WHERE product_id=ANY($1::uuid[]) AND is_active=true`,[ids]);
+  const variantMap=new Map(variants.map(variant=>[variant.id,variant]));
+  const optionCounts=new Map();
+  for(const variant of variants) optionCounts.set(variant.product_id,(optionCounts.get(variant.product_id)||0)+1);
   let subtotal=0,fee=0,physical=false;
-  for(const product of rows) {
-    const q=items.filter(x=>x.product_id===product.id).reduce((n,x)=>n+Math.min(20,Math.max(1,parseInt(x.quantity,10)||1)),0);
-    subtotal+=Number(product.price_kobo)*q;
-    fee+=Math.round(Number(product.price_kobo)*q*Number(product.commission_bps)/10000);
+  for(const item of items) {
+    const product=productMap.get(text(item.product_id,80));
+    const quantity=Math.min(20,Math.max(1,parseInt(item.quantity,10)||1));
+    const variantId=text(item.variant_id,80),variant=variantId?variantMap.get(variantId):null;
+    if(variantId&&(!variant||variant.product_id!==product.id)) throw new HttpError(409,'A selected product option is no longer available.');
+    if(!variantId&&optionCounts.get(product.id)) throw new HttpError(400,'Choose an option for '+product.id+' before applying a promo code.');
+    const price=Number(variant?.price_kobo||product.price_kobo);
+    subtotal+=price*quantity;
+    fee+=Math.round(price*quantity*Number(product.commission_bps)/10000);
     if(product.product_type==='physical') physical=true;
   }
   const promo=await resolvePromo(db,user,text(body.code,40).toUpperCase(),subtotal,fee,false);
