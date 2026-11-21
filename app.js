@@ -627,7 +627,7 @@ function renderSellerProductsPanel(data) {
     const digital=p.product_type==='digital',stock=Number(p.stock_qty||0),variants=p.variants||[];
     const note=digital?'Digital item':stock===0?'Out of stock':stock<=5?'Low stock':'Stock available';
     const stockCell=digital?'—':variants.length
-      ?'<strong>'+variants.length+' option(s) · '+stock+' total units</strong><small class="variant-stock-list">'+variants.map(v=>html(v.label)+': '+Number(v.stock_qty)).join(' · ')+'</small>'
+      ?'<strong>'+variants.length+' option(s) · '+stock+' total units</strong><div class="variant-stock-list">'+variants.map(v=>'<div class="variant-stock-row"><span>'+html(v.label)+' · '+html(v.sku||'No SKU')+'</span><div><input type="number" min="0" max="1000000" step="1" value="'+Number(v.stock_qty)+'" data-variant-stock-input="'+escAttr(v.id)+'" aria-label="Stock for '+escAttr(v.label)+'"><button class="dash-action" type="button" data-save-variant-stock="'+escAttr(v.id)+'">Save</button></div></div>').join('')+'</div>'
       :'<div class="inventory-editor"><input type="number" min="0" max="1000000" step="1" value="'+stock+'" data-stock-input="'+escAttr(p.id)+'" aria-label="Stock quantity for '+escAttr(p.name)+'"><button class="dash-action" type="button" data-save-stock="'+escAttr(p.id)+'">Save</button></div><small class="stock-state '+(stock<=5?'stock-low':'')+'">'+note+'</small>';
     return '<tr><td><div class="seller-product-cell">'+(p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':'')+'<strong>'+html(p.name)+'</strong></div></td><td>'+money(p.price_kobo)+'</td><td>'+html(p.product_type)+'</td><td>'+stockCell+'</td><td>'+statusPill(p.status)+'</td><td><button class="dash-action" data-edit-product="'+escAttr(p.id)+'">Edit</button></td></tr>';
   }).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6);
@@ -1088,6 +1088,16 @@ document.addEventListener('click',async e=>{
   if(e.target.closest('#clear-compare')){state.compare.clear();renderProducts();return;}
   if(e.target.closest('#bulk-import-trigger')){$('#bulk-product-file').click();return;}
   if(e.target.closest('#bulk-import-template')){downloadBulkProductTemplate();return;}
+  const variantStockSave=e.target.closest('[data-save-variant-stock]');
+  if(variantStockSave){
+    const input=$('[data-variant-stock-input="'+variantStockSave.dataset.saveVariantStock+'"]'),stock=Number(input?.value);
+    if(!Number.isInteger(stock)||stock<0||stock>1000000){notify('Enter a whole-number quantity from 0 to 1,000,000.');return;}
+    variantStockSave.disabled=true;
+    try{await api('seller.variant-stock.update',{variant_id:variantStockSave.dataset.saveVariantStock,stock_qty:stock});notify('Variation inventory updated without unpublishing your product.');await loadDashboardTab();}
+    catch(error){notify(error.message);}
+    finally{variantStockSave.disabled=false;}
+    return;
+  }
   const stockSave=e.target.closest('[data-save-stock]');if(stockSave){const input=$('[data-stock-input="'+stockSave.dataset.saveStock+'"]');const stock=Number(input?.value);if(!Number.isInteger(stock)||stock<0||stock>1000000){notify('Enter a whole-number quantity from 0 to 1,000,000.');return;}stockSave.disabled=true;try{await api('seller.inventory.update',{id:stockSave.dataset.saveStock,stock_qty:stock});notify(stock===0?'Stock updated. Product is now out of stock.':'Inventory quantity updated.');await loadDashboardTab();}catch(error){notify(error.message);}finally{stockSave.disabled=false;}return;}
   const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){addToCart(detailAdd.dataset.detailAdd,$('#detail-variant-select')?.value||'');closeModal('detail-modal');return;}
   const view=e.target.closest('[data-view]');if(view){showProduct(view.dataset.view);return;}
