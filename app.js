@@ -496,10 +496,19 @@ function renderAdminGrowth(data) {
 }
 
 function renderMetric(label,value) { return `<div class="metric-card"><small>${html(label)}</small><b>${html(value)}</b></div>`; }
+function renderAdminIntegrations(data) {
+  const items=data.integrations||{};
+  const line=(title,ready,detail)=>'<div class="integration-check"><span class="integration-mark '+(ready?'ready':'blocked')+'">'+(ready?'✓':'!')+'</span><div><strong>'+title+'</strong><small>'+detail+'</small></div><span class="status-pill '+(ready?'approved':'pending')+'">'+(ready?'Ready':'Action required')+'</span></div>';
+  return '<div class="dash-panel integration-readiness"><h3>Marketplace launch readiness</h3><p class="modal-intro">Configuration checks for the services that support selling, media and seller settlement.</p>'+
+    line('Secure checkout',!!items.paystack_configured,items.paystack_configured?'Paystack secret key is present. Run a live test transaction before announcing checkout.':'Checkout is disabled until PAYSTACK_SECRET_KEY is added to the Vercel production environment.')+
+    line('Product image storage',!!items.media_uploads_configured,items.media_uploads_configured?'Product media uploads are configured.':'Add BLOB_READ_WRITE_TOKEN to enable product image uploads.')+
+    line('Payout data encryption',!!items.payout_encryption_configured,items.payout_encryption_configured?'Sensitive seller payout fields can be encrypted.':'Add MARKET_FIELD_ENCRYPTION_KEY before collecting or updating seller bank details.')+'</div>';
+}
 function renderAdminTab(tab,data) {
   const el=$('#dashboard-content');
   if(tab==='overview') {
     el.innerHTML=`<div class="metric-grid">${renderMetric('Paid GMV',money(data.orders?.gmv))}${renderMetric('Paid orders',data.orders?.paid_orders||0)}${renderMetric('Approved stores',data.sellers?.approved||0)}${renderMetric('Pending seller applications',data.sellers?.pending||0)}${renderMetric('Pending payouts',money(data.payouts?.outstanding))}</div>
+      ${renderAdminIntegrations(data)}
       <div class="dash-panel seller-review-queue"><h3>Seller applications awaiting review</h3><p class="modal-intro">${Number(data.sellers?.pending||0)} application(s) are waiting for your decision.</p><button class="dash-action primary" data-dash-tab="sellers">Review seller applications →</button></div>
       <div class="dash-panel"><h3>Recent orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order</th><th>Buyer</th><th>Total</th><th>Payment</th><th>Created</th></tr></thead><tbody>${(data.recent||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong></td><td>${html(o.buyer_email)}</td><td>${money(o.total_kobo)}</td><td>${statusPill(o.payment_status)}</td><td>${formatDate(o.created_at)}</td></tr>`).join('')||tableEmpty('No orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='sellers') {
