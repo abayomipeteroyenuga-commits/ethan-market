@@ -752,10 +752,35 @@ function renderProductImagePreview(url) {
   if(valid){image.src=value;image.alt='Product photo preview';image.onerror=()=>{preview.hidden=true;clear.hidden=true;};}
   else {image.removeAttribute('src');image.onerror=null;}
 }
+function renderVariantRows(variants=[]) {
+  const list=$('#variant-rows');
+  if(!list)return;
+  list.innerHTML=(variants||[]).map(v=>`<div class="variant-row" data-variant-row data-variant-id="${escAttr(v.id||'')}">
+    <div class="form-field"><label>Option / combination *</label><input data-variant-label maxlength="100" required value="${escAttr(v.label||'')}" placeholder="e.g. Black / Medium"></div>
+    <div class="form-field"><label>Variant SKU</label><input data-variant-sku maxlength="80" value="${escAttr(v.sku||'')}" placeholder="SKU-BLK-M"></div>
+    <div class="form-field"><label>Price override (₦)</label><input data-variant-price type="number" min="1" step="1" value="${v.price_kobo===null||v.price_kobo===undefined?'':Number(v.price_kobo)/100}" placeholder="Use base price"></div>
+    <div class="form-field"><label>Stock quantity *</label><input data-variant-stock type="number" min="0" max="1000000" step="1" required value="${Number(v.stock_qty||0)}"></div>
+    <button class="dash-action danger variant-remove" type="button" data-variant-remove>Remove option</button>
+  </div>`).join('');
+  updateProductType();
+}
+function collectProductVariants() {
+  return $('[data-variant-row]',$('#variant-rows')).map(row=>{
+    const rawPrice=$('[data-variant-price]',row).value.trim();
+    return {
+      id:row.dataset.variantId||'',
+      label:$('[data-variant-label]',row).value.trim(),
+      sku:$('[data-variant-sku]',row).value.trim(),
+      price_kobo:rawPrice?nairaToKobo(rawPrice):null,
+      stock_qty:Number($('[data-variant-stock]',row).value)
+    };
+  });
+}
 function openProductEditor(product) {
   $('#product-form').reset();
   $('#product-id').value=product?.id||'';
   $('#product-title').textContent=product?'Edit product.':'Add a product.';
+  renderVariantRows(product?.variants||[]);
   $('#product-error').textContent='';
   $('#image-upload-state').textContent='';
   $('#product-image-file').value='';
@@ -779,12 +804,14 @@ function openProductEditor(product) {
 }
 function updateProductType(){
   const isDigital=$('#product-type').value==='digital';
-  $('#product-stock-wrap').hidden=isDigital;
+  const hasVariants=Boolean($('#variant-rows')?.querySelector('[data-variant-row]'));
+  $('#product-stock-wrap').hidden=isDigital||hasVariants;
+  $('#variant-wrap').hidden=isDigital;
   $('#digital-url-wrap').hidden=!isDigital;
-  $('#product-stock').required=!isDigital;
-  $('#product-stock').disabled=isDigital;
+  $('#product-stock').required=!isDigital&&!hasVariants;
+  $('#product-stock').disabled=isDigital||hasVariants;
   if(isDigital)$('#product-stock').value=0;
-  else if(!Number($('#product-stock').value))$('#product-stock').value=1;
+  else if(!hasVariants&&!Number($('#product-stock').value))$('#product-stock').value=1;
 }
 async function uploadProductImage(e){
   const file=e.target.files?.[0];
@@ -841,6 +868,7 @@ async function submitProduct(e){
   const stock=Number($('#product-stock').value);
   const imageUrl=$('#product-image').value.trim();
   const digitalUrl=$('#digital-url').value.trim();
+  const variants=collectProductVariants();
   if(name.length<3){error.textContent='Enter a product name with at least 3 characters.';$('#product-name').focus();return;}
   if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
   if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
@@ -848,10 +876,19 @@ async function submitProduct(e){
   if(type==='physical'&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
   if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
   if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
+  if(type==='digital'&&variants.length){error.textContent='Digital products cannot have physical stock variations.';return;}
+  const labels=new Set();
+  for(const variant of variants){
+    if(variant.label.length<1){error.textContent='Every variation needs a name, such as Black / Medium.';return;}
+    if(labels.has(variant.label.toLowerCase())){error.textContent='Variation names must be unique.';return;}
+    labels.add(variant.label.toLowerCase());
+    if(!Number.isInteger(variant.stock_qty)||variant.stock_qty<0){error.textContent='Enter a whole-number stock quantity for every variation.';return;}
+    if(variant.price_kobo!==null&&variant.price_kobo<100){error.textContent='A variation price must be at least ₦1.';return;}
+  }
   const payload={
     id:$('#product-id').value,name,category_id:categoryId,product_type:type,
     price_kobo:nairaToKobo(price),compare_at_kobo:compare?nairaToKobo(compare):null,
-    stock_qty:type==='digital'?0:stock,sku:$('#product-sku').value.trim(),
+    stock_qty:type==='digital'?0:variants.length?variants.reduce((sum,v)=>sum+v.stock_qty,0):stock,variants,sku:$('#product-sku').value.trim(),
     image_url:imageUrl,description:$('#product-description').value.trim(),digital_delivery_url:digitalUrl
   };
   button.disabled=true;
