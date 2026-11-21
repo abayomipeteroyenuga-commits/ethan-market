@@ -1,4 +1,4 @@
-const CACHE='ethan-market-v2.4-community-tracking';
+const CACHE='ethan-market-v2.5-monnify';
 const SHELL=['/','/index.html','/styles.css','/app.js','/manifest.webmanifest','/assets/ethan-market-logo.png','/assets/ethan-market-icon-192.png','/assets/ethan-market-icon-512.png','/assets/favicon.png','/assets/apple-touch-icon.png'];
 const NETWORK_FIRST=new Set(['/','/index.html','/styles.css','/app.js','/manifest.webmanifest','/account','/account/','/account.html','/account.js','/login','/login/','/register','/register/']);
 const NEVER_CACHE_PREFIXES=['/product/','/store/','/sitemap-products.xml','/sitemap-stores.xml'];
