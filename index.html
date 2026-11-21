@@ -31,7 +31,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css?v=20261121-acquisition-v1">
+  <link rel="stylesheet" href="/styles.css?v=20261121-marketplace-upgrades-v1">
 </head>
 <body>
   <div class="announcement"><span class="announcement-dot"></span> A new way to discover products, people and possibilities <a href="#sell">Become a seller <span>↗</span></a></div>
@@ -97,6 +97,7 @@
         </div>
         <div class="shop-toolbar"><div class="filter-chips" id="filter-chips"><button class="filter-chip selected" data-filter="all">All products</button><button class="filter-chip" data-filter="physical">Physical</button><button class="filter-chip" data-filter="digital">Digital</button><button class="filter-chip" data-filter="featured">Featured</button></div><div class="shop-sort"><span id="results-count">Loading products…</span><label for="sort-select">Sort by</label><select id="sort-select"><option value="featured">Recommended</option><option value="popular">Most popular</option><option value="price-asc">Price: low to high</option><option value="price-desc">Price: high to low</option></select></div></div>
         <div id="product-grid" class="product-grid"><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div><div class="skeleton product-skeleton"></div></div>
+        <div id="compare-toolbar" class="compare-toolbar" hidden aria-live="polite"></div>
         <div class="empty-state" id="empty-state" hidden><div class="empty-icon">⌕</div><h3>Nothing here just yet.</h3><p>Try another search or browse a different category.</p><button class="button button-outline" id="clear-filters">Clear filters</button></div>
       </div>
     </section>
@@ -140,8 +141,10 @@
 
   <div class="modal-backdrop" id="dashboard-modal" hidden><section class="modal dashboard-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-title"><button class="close-button modal-close" data-close="dashboard-modal" aria-label="Close">×</button><div class="dashboard-head"><div><div class="modal-kicker">ETHAN MARKET ACCOUNT</div><h2 id="dashboard-title">Your dashboard.</h2></div><button class="button button-outline button-small" id="logout-button">Sign out</button></div><div class="dashboard-tabs" id="dashboard-tabs"></div><div id="dashboard-content" class="dashboard-content"><div class="dashboard-loading">Loading your workspace…</div></div></section></div>
 
+<div class="modal-backdrop" id="compare-modal" hidden><section class="modal compare-modal" role="dialog" aria-modal="true" aria-labelledby="compare-title"><button class="close-button modal-close" data-close="compare-modal" aria-label="Close">×</button><div class="modal-kicker">BUYER SHOPPING TOOLS</div><h2 id="compare-title">Compare products.</h2><p class="modal-intro">Review price, seller, category, product type, ratings and availability side by side.</p><div id="compare-content"></div></section></div>
+
   <div class="modal-backdrop" id="detail-modal" hidden><section class="modal detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-name"><button class="close-button modal-close" data-close="detail-modal" aria-label="Close">×</button><div id="detail-content"></div></section></div>
 
-  <script src="/app.js?v=20261121-product-editor-v2"></script>
+  <script src="/app.js?v=20261121-marketplace-upgrades-v1"></script>
 </body>
 </html>
