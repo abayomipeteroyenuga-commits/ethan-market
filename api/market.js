@@ -1041,8 +1041,19 @@ async function saveProduct(db, req, body) {
   const type = body.product_type === 'digital' ? 'digital' : 'physical';
   const variantsSupplied=Array.isArray(body.variants);
   const variants=variantsSupplied?body.variants:[];
+  if(variants.length>30) throw new HttpError(400,'A product can have up to 30 variations.');
   if(type==='digital'&&variants.length) throw new HttpError(400,'Digital products cannot have physical stock variations.');
-  const stock = type === 'digital' ? 999999 : variants.length ? variants.reduce((sum,item)=>sum+Math.max(0,Number(item?.stock_qty)||0),0) : Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
+  const variantLabels=new Set();
+  for(const item of variants){
+    const label=text(item?.label,100).trim(),stockQty=Number(item?.stock_qty);
+    const variantPrice=item?.price_kobo===null||item?.price_kobo===''||item?.price_kobo===undefined?null:money(item.price_kobo);
+    if(!label) throw new HttpError(400,'Every variation needs an option label.');
+    if(variantLabels.has(label.toLowerCase())) throw new HttpError(400,'Variation labels must be unique within a product.');
+    variantLabels.add(label.toLowerCase());
+    if(!Number.isInteger(stockQty)||stockQty<0||stockQty>1000000) throw new HttpError(400,'Variation stock must be a whole number between 0 and 1,000,000.');
+    if(variantPrice!==null&&variantPrice<100) throw new HttpError(400,'Variation prices must be at least ₦1.');
+  }
+  const stock = type === 'digital' ? 999999 : variants.length ? variants.reduce((sum,item)=>sum+Number(item.stock_qty),0) : Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
   const imageUrl = text(body.image_url,1000);
   if (name.length < 3 || description.length < 10 || price < 100) throw new HttpError(400,'Add a product name, a useful description and a price of at least ₦1.');
   if (body.compare_at_kobo && money(body.compare_at_kobo) < price) throw new HttpError(400,'The previous price must be higher than the selling price.');
@@ -1786,6 +1797,10 @@ async function adminList(db,req,kind) {
   }
   if(kind==='products') {
     const {rows}=await db.query(`SELECT p.*,s.store_name,c.name AS category_name FROM market_products p JOIN market_sellers s ON s.id=p.seller_id LEFT JOIN market_categories c ON c.id=p.category_id ORDER BY CASE p.status WHEN 'pending' THEN 0 ELSE 1 END,p.created_at DESC LIMIT 250`);
+    const variants=await db.query(`SELECT id,product_id,label,sku,price_kobo,stock_qty FROM market_product_variants WHERE is_active=true AND product_id=ANY($1::uuid[]) ORDER BY label`,[rows.map(p=>p.id)]);
+    const byProduct=new Map();
+    for(const variant of variants.rows){if(!byProduct.has(variant.product_id))byProduct.set(variant.product_id,[]);byProduct.get(variant.product_id).push(variant);}
+    for(const product of rows)product.variants=byProduct.get(product.id)||[];
     return {products:rows};
   }
   if(kind==='orders') {
