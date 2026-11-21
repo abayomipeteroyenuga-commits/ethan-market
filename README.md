@@ -73,6 +73,8 @@ The admin dashboard includes a Growth workspace for acquisition campaigns, promo
 - Buyers and sellers may apply to the affiliate programme. Administrators approve participants and configure their share of ETHAN MARKET's marketplace fee. Eligible conversions are recorded for review; affiliate transfers are manually approved and recorded, not automatic.
 - Affiliate rewards on an order are voided when a buyer dispute is resolved in the buyer's favour.
 - Growth events include page/product/store views and signup/checkout activity. Tracking is rate limited and is not an assurance of unique human visitors.
+- Buyers can share personal invite links using the native device share sheet or WhatsApp. Approved sellers receive a share-ready store URL and direct links for their active products in the Grow & refer workspace.
+- Marketplace administrators have a launch-message kit for buyer and seller outreach, alongside campaign-specific tracking links for channel attribution.
 
 ## Payment behaviour
 
@@ -144,6 +146,7 @@ The schema is initialized by the first successful API request using `CREATE TABL
 - `1.1.0`: seller storefront pages, persistent-cart hydration, buyer product reviews, admin seller payout account visibility, current Paystack timestamped webhook signature parsing, security headers and cache rotation.
 - `1.1.1`: serialize first-run database schema creation across concurrent serverless cold starts using a PostgreSQL advisory lock.
 - `1.2.0`: buyer receipt confirmation, per-item dispute management, seller responses, conditional payout eligibility and crawlable product/store SEO pages with structured data and dynamic sitemaps.
+- `1.8.0`: buyer sharing prompts, native/WhatsApp invite sharing, seller store and product marketing links, admin launch-message kit and acquisition cache rotation.
 
 ## Operational notes
 
