@@ -1531,7 +1531,9 @@ async function checkout(db, req, body) {
   } catch(e) { await dbClient.query('ROLLBACK'); throw e; }
   finally { dbClient.release(); }
 
-  const callback = (process.env.MARKET_PUBLIC_URL || 'https://market.ethandigitalacademy.org').replace(/\\/$/,'') + '/?payment=verify&reference=' + encodeURIComponent(order.reference);
+  let callbackBase=String(process.env.MARKET_PUBLIC_URL||'https://market.ethandigitalacademy.org').trim();
+  while(callbackBase.endsWith('/')) callbackBase=callbackBase.slice(0,-1);
+  const callback=callbackBase+'/?payment=verify&reference='+encodeURIComponent(order.reference);
   try {
     const gateway = await monnifyRequest('/api/v1/merchant/transactions/init-transaction', {
       method:'POST',
