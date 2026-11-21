@@ -6,7 +6,7 @@ const state = {
   user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, payments_enabled: false },
   category: 'all', filter: 'all', query: '', sort: 'featured', cart: readCart(), wishlist: new Set(),
   authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null,
-  unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null
+  unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null, compare: new Map()
 };
 const money = kobo => '₦' + (Number(kobo || 0) / 100).toLocaleString('en-NG', { maximumFractionDigits: 2 });
 const nairaToKobo = value => Math.max(0, Math.round(Number(value || 0) * 100));
@@ -133,12 +133,13 @@ function renderProducts() {
         <button class="wishlist-button ${state.wishlist.has(p.id) ? 'saved' : ''}" data-wish="${escAttr(p.id)}" aria-label="${state.wishlist.has(p.id) ? 'Remove from' : 'Add to'} wishlist">${state.wishlist.has(p.id) ? '♥' : '♡'}</button>${imageContent(p)}</div>
       <div class="product-info"><span class="product-category">${html(p.category_name || 'Marketplace')}</span><h3><a class="product-title-link" href="/product/${encodeURIComponent(p.slug||'item')}/${encodeURIComponent(p.id)}">${html(p.name)}</a></h3><span class="seller-name">Sold by <a class="store-link" href="/store/${encodeURIComponent(p.store_slug||'')}">${html(p.store_name || 'Ethan seller')}</a></span>
         <div class="product-bottom"><strong class="product-price">${money(p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
-        <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button></div>
+        <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button><button class="compare-button ${state.compare.has(p.id)?'selected':''}" data-compare="${escAttr(p.id)}" aria-pressed="${state.compare.has(p.id)}">${state.compare.has(p.id)?'✓ Added':'Compare'}</button></div>
       </div>
     </article>`).join('');
   $('#results-count').textContent = `${list.length} product${list.length === 1 ? '' : 's'} found`;
   $('#empty-state').hidden = list.length > 0;
   $('#product-grid').hidden = list.length === 0;
+  renderCompareToolbar();
 }
 async function loadProducts() {
   try {
@@ -518,22 +519,152 @@ function renderAdminTab(tab,data) {
     el.innerHTML=`<div class="dash-panel"><h3>Marketplace settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Default seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||1000)/100).toFixed(1)}"></div><div class="form-field"><label for="market-shipping">Default physical delivery fee (₦)</label><input id="market-shipping" type="number" min="0" step="100" value="${Number(settings.physical_shipping_kobo||200000)/100}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form></div><div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Paystack checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add your Paystack secret key to the Vercel project environment to activate initialize, verify and webhook payments. Never put the secret key in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
   }
 }
+function renderCompareToolbar() {
+  const bar=$('#compare-toolbar');
+  if(!bar)return;
+  const count=state.compare.size;
+  bar.hidden=count===0;
+  if(!count)return;
+  bar.innerHTML='<div><strong>'+count+' product'+(count===1?'':'s')+' selected</strong><small>Compare product details side by side. Choose up to four products.</small></div><div class="dash-actions"><button class="dash-action" id="clear-compare" type="button">Clear</button><button class="dash-action primary" id="open-compare" type="button" '+(count<2?'disabled':'')+'>Compare now ('+count+')</button></div>';
+}
+
+function toggleProductCompare(id) {
+  if(state.compare.has(id)){state.compare.delete(id);renderProducts();return;}
+  const product=state.products.find(item=>item.id===id);
+  if(!product)return;
+  if(state.compare.size>=4){notify('Compare up to four products at a time.');return;}
+  state.compare.set(id,product);
+  renderProducts();
+}
+
+function showProductComparison() {
+  const products=[...state.compare.values()];
+  if(products.length<2){notify('Select at least two products to compare.');return;}
+  const fields=[
+    ['Price',p=>money(p.price_kobo)],
+    ['Previous price',p=>p.compare_at_kobo?money(p.compare_at_kobo):'—'],
+    ['Seller',p=>html(p.store_name||'—')],
+    ['Category',p=>html(p.category_name||'—')],
+    ['Product type',p=>html(p.product_type||'—')],
+    ['Rating',p=>Number(p.rating||0)?'★ '+Number(p.rating).toFixed(1)+' ('+Number(p.review_count||0)+' reviews)':'Not reviewed yet'],
+    ['Availability',p=>p.product_type==='digital'?'Digital delivery':Number(p.stock_qty)>0?'In stock ('+Number(p.stock_qty)+')':'Out of stock']
+  ];
+  const head='<tr><th>Product details</th>'+products.map(p=>'<th>'+html(p.name)+'</th>').join('')+'</tr>';
+  const body=fields.map(([label,render])=>'<tr><th>'+label+'</th>'+products.map(p=>'<td>'+render(p)+'</td>').join('')+'</tr>').join('');
+  $('#compare-content').innerHTML='<div class="compare-table-wrap"><table class="compare-table"><thead>'+head+'</thead><tbody>'+body+'</tbody></table></div>';
+  showModal('compare-modal');
+}
+
+function sellerAnalyticsPanel(data) {
+  const analytics=data.analytics||{},summary=analytics.summary||{},trend=analytics.sales_trend||[];
+  const max=Math.max(1,...trend.map(day=>Number(day.revenue_kobo||0)));
+  const bars=trend.map(day=>{const value=Number(day.revenue_kobo||0),height=Math.max(3,Math.round(value/max*100));return '<div class="sales-day" title="'+html(day.day)+': '+money(value)+'"><div class="sales-bar-track"><span style="height:'+height+'%"></span></div><small>'+html(String(day.day||'').slice(5))+'</small></div>';}).join('');
+  const top=(analytics.top_products||[]).map(p=>'<tr><td><strong>'+html(p.product_name)+'</strong></td><td>'+Number(p.units_sold||0)+'</td><td>'+money(p.revenue_kobo)+'</td></tr>').join('')||tableEmpty('No paid product sales yet.',3);
+  return '<div class="dash-panel seller-analytics-panel"><div class="dashboard-head"><div><h3>Sales performance</h3><p class="modal-intro">Paid orders and product activity from the last 30 days.</p></div><span class="status-pill">Updated live</span></div><div class="metric-grid">'+
+    renderMetric('30-day revenue',money(summary.gross_revenue_kobo))+renderMetric('Paid orders',Number(summary.paid_orders||0))+renderMetric('Units sold',Number(summary.units_sold||0))+renderMetric('Product views',Number(analytics.total_views||0))+'</div>'+
+    '<h4 class="seller-subheading">Daily sales · last 14 days</h4><div class="sales-chart">'+(bars||'<p class="dash-empty">Sales activity will appear here.</p>')+'</div>'+
+    '<h4 class="seller-subheading">Top products · last 30 days</h4><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Units sold</th><th>Revenue</th></tr></thead><tbody>'+top+'</tbody></table></div></div>';
+}
+
+function renderSellerProductsPanel(data) {
+  const products=data.products||[];
+  const counts={active:products.filter(p=>p.status==='active').length,pending:products.filter(p=>p.status==='pending').length,draft:products.filter(p=>p.status==='draft').length,rejected:products.filter(p=>p.status==='rejected').length};
+  const low=products.filter(p=>p.product_type==='physical'&&Number(p.stock_qty)<=5);
+  const rows=products.map(p=>{
+    const digital=p.product_type==='digital',stock=Number(p.stock_qty||0);
+    const note=digital?'Digital item':stock===0?'Out of stock':stock<=5?'Low stock':'Stock available';
+    return '<tr><td><div class="seller-product-cell">'+(p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':'')+'<strong>'+html(p.name)+'</strong></div></td><td>'+money(p.price_kobo)+'</td><td>'+html(p.product_type)+'</td><td>'+(digital?'—':'<div class="inventory-editor"><input type="number" min="0" max="1000000" step="1" value="'+stock+'" data-stock-input="'+escAttr(p.id)+'" aria-label="Stock quantity for '+escAttr(p.name)+'"><button class="dash-action" type="button" data-save-stock="'+escAttr(p.id)+'">Save</button></div><small class="stock-state '+(stock<=5?'stock-low':'')+'">'+note+'</small>')+'</td><td>'+statusPill(p.status)+'</td><td><button class="dash-action" data-edit-product="'+escAttr(p.id)+'">Edit</button></td></tr>';
+  }).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6);
+  return '<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products and inventory</h3><p class="modal-intro">Update stock without taking a live listing offline. Product content edits still go through review.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div>'+
+    '<div class="metric-grid">'+renderMetric('Published',counts.active)+renderMetric('Awaiting review',counts.pending)+renderMetric('Drafts',counts.draft)+renderMetric('Low / out of stock',low.length)+'</div>'+
+    (low.length?'<div class="inventory-warning"><strong>'+low.length+' product(s) need stock attention</strong><span>'+low.slice(0,5).map(p=>html(p.name)+' ('+Number(p.stock_qty||0)+')').join(' · ')+'</span></div>':'')+
+    '<div class="seller-import-toolbar"><div><strong>Import products in bulk</strong><small>Upload a CSV file with up to 30 product rows. Every new listing is submitted for review.</small></div><div class="dash-actions"><button class="dash-action" id="bulk-import-template" type="button">Download CSV template</button><button class="dash-action primary" id="bulk-import-trigger" type="button">Import CSV</button><input id="bulk-product-file" type="file" accept=".csv,text/csv" hidden></div></div><p class="upload-state" id="bulk-import-status" aria-live="polite"></p>'+
+    '<div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock / update</th><th>Status</th><th>Action</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+}
+
+function csvRows(source) {
+  const rows=[];let row=[],field='',quoted=false;
+  for(let i=0;i<source.length;i++){
+    const ch=source[i];
+    if(ch==='"'){if(quoted&&source[i+1]==='"'){field+='"';i++;}else quoted=!quoted;}
+    else if(ch===','&&!quoted){row.push(field);field='';}
+    else if((ch==='\n'||ch==='\r')&&!quoted){if(ch==='\r'&&source[i+1]==='\n')i++;row.push(field);if(row.some(v=>String(v).trim()))rows.push(row);row=[];field='';}
+    else field+=ch;
+  }
+  row.push(field);if(row.some(v=>String(v).trim()))rows.push(row);
+  return rows;
+}
+
+function downloadBulkProductTemplate() {
+  const csv='name,category_slug,description,price_naira,stock_qty,product_type,sku,image_url,digital_delivery_url,compare_at_naira\r\n"Sample product",electronics,"Describe the product in at least 10 characters",25000,10,physical,SKU-001,https://example.com/product.jpg,,30000\r\n';
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+  link.href=url;link.download='ethan-market-product-import-template.csv';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+}
+
+async function importSellerCsv(file) {
+  const status=$('#bulk-import-status');
+  try {
+    if(!file||!file.name.toLowerCase().endsWith('.csv'))throw new Error('Choose a CSV file exported from Excel or Google Sheets.');
+    if(file.size<1||file.size>180000)throw new Error('CSV file must be smaller than 180 KB.');
+    const rows=csvRows((await file.text()).replace(/^\uFEFF/,''));
+    if(rows.length<2)throw new Error('The CSV file has no product rows.');
+    if(rows.length>31)throw new Error('Import no more than 30 products at a time.');
+    const headers=rows[0].map(x=>String(x||'').trim().toLowerCase());
+    const required=['name','category_slug','description','price_naira'];
+    const missing=required.filter(x=>!headers.includes(x));
+    if(missing.length)throw new Error('Missing CSV columns: '+missing.join(', '));
+    const products=[],sourceRows=[],rowErrors=[];
+    for(let i=1;i<rows.length;i++){
+      const cells=rows[i],value={};headers.forEach((key,index)=>value[key]=String(cells[index]??'').trim());
+      const name=value.name||'',description=value.description||'',categoryValue=value.category_slug||'';
+      const category=state.categories.find(c=>c.slug.toLowerCase()===categoryValue.toLowerCase()||c.name.toLowerCase()===categoryValue.toLowerCase()||c.id===categoryValue);
+      const type=(value.product_type||'physical').toLowerCase()==='digital'?'digital':'physical';
+      const price=Number(value.price_naira),stock=type==='digital'?0:Number(value.stock_qty||0),compare=Number(value.compare_at_naira||0);
+      const issues=[];
+      if(name.length<3)issues.push('product name must be at least 3 characters');
+      if(description.length<10)issues.push('description must be at least 10 characters');
+      if(!category)issues.push('category_slug must match an Ethan Market category');
+      if(!Number.isFinite(price)||price<1)issues.push('price_naira must be at least 1');
+      if(type==='physical'&&(!Number.isInteger(stock)||stock<1))issues.push('physical stock_qty must be a whole number of at least 1');
+      if(compare>0&&compare<=price)issues.push('compare_at_naira must be greater than price_naira');
+      if(value.image_url&&!/^https:\/\//i.test(value.image_url))issues.push('image_url must use HTTPS');
+      if(value.digital_delivery_url&&!/^https:\/\//i.test(value.digital_delivery_url))issues.push('digital_delivery_url must use HTTPS');
+      if(issues.length){rowErrors.push('CSV row '+(i+1)+': '+issues.join('; '));continue;}
+      products.push({name,description,category_id:category.id,product_type:type,price_kobo:nairaToKobo(price),compare_at_kobo:compare?nairaToKobo(compare):null,stock_qty:stock,sku:value.sku||'',image_url:value.image_url||'',digital_delivery_url:value.digital_delivery_url||''});
+      sourceRows.push(i+1);
+    }
+    if(!products.length)throw new Error(rowErrors.slice(0,5).join(' | ')||'No valid product rows found.');
+    status.textContent='Importing '+products.length+' product(s)…';
+    const result=await api('seller.products.bulk',{products});
+    const errors=(result.errors||[]).map(e=>'CSV row '+(sourceRows[e.row-2]||e.row)+': '+e.message);
+    const combined=rowErrors.concat(errors);
+    status.textContent=result.imported+' product(s) imported for review; '+(rowErrors.length+result.failed)+' row(s) skipped.'+(combined.length?' '+combined.slice(0,4).join(' | '):'');
+    state.dashboardTab='products';await loadDashboardTab();
+    const statusAfter=$('#bulk-import-status');if(statusAfter)statusAfter.textContent=status.textContent;
+    notify(result.imported+' product(s) submitted for review.');
+  } catch(error) {
+    if(status)status.textContent=error.message||'CSV import failed.';
+    notify(error.message||'CSV import failed.');
+  } finally {
+    const input=$('#bulk-product-file');if(input)input.value='';
+  }
+}
 function renderSellerTab(tab,data) {
   const el=$('#dashboard-content');
   if(tab==='overview') {
     const products=data.products||[],orders=data.orders||[];
     const counts={active:products.filter(p=>p.status==='active').length,pending:products.filter(p=>p.status==='pending').length,draft:products.filter(p=>p.status==='draft').length,rejected:products.filter(p=>p.status==='rejected').length};
+    const analytics=data.analytics||{};
     const storeUrl='https://market.ethandigitalacademy.org/store/'+encodeURIComponent(data.seller?.slug||'');
     const referralUrl=data.referral_url||'';
     const storeMessage='Shop '+(data.seller?.store_name||'my store')+' on ETHAN MARKET. Discover my products:';
     const inviteMessage='Join me on ETHAN MARKET and discover products from independent Nigerian businesses:';
-    el.innerHTML=`<div class="dash-panel"><h3>${html(data.seller?.store_name||'Your store')}</h3><p class="modal-intro">Your seller studio is ready. Add products, manage inventory and share your store with customers. New and edited listings are reviewed before publication.</p><div class="metric-grid">${renderMetric('All products',products.length)}${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Paid order items',orders.length)}${renderMetric('Pending settlement',money(data.totals?.outstanding))}${renderMetric('Payouts recorded',money(data.totals?.paid))}</div><div class="dash-actions"><button class="button button-primary" id="add-product-button">Add a product +</button><button class="dash-action" data-dash-tab="products">Manage products</button><span class="status-pill approved">Seller approved</span></div></div>
+    el.innerHTML=`<div class="dash-panel"><h3>${html(data.seller?.store_name||'Your store')}</h3><p class="modal-intro">Your seller studio is ready. Add products, manage inventory and share your store with customers. New and edited listings are reviewed before publication.</p><div class="metric-grid">${renderMetric('All products',products.length)}${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Low / out of stock',products.filter(p=>p.product_type==='physical'&&Number(p.stock_qty)<=5).length)}${renderMetric('Paid order items',orders.length)}${renderMetric('Pending settlement',money(data.totals?.outstanding))}${renderMetric('Payouts recorded',money(data.totals?.paid))}</div><div class="dash-actions"><button class="button button-primary" id="add-product-button">Add a product +</button><button class="dash-action" data-dash-tab="products">Manage products</button><span class="status-pill approved">Seller approved</span></div></div>
+     '+sellerAnalyticsPanel(data)+'
     <div class="dash-panel seller-marketing-panel"><h3>Your store link</h3><p class="modal-intro">Share your public storefront so customers can browse all your published products.</p><div class="growth-link-row"><input aria-label="Your public store link" readonly value="${escAttr(storeUrl)}"><button class="dash-action primary" data-growth-copy="${escAttr(storeUrl)}">Copy store link</button></div><div class="growth-share-actions"><button class="dash-action primary" data-share-url="${escAttr(storeUrl)}" data-share-text="${escAttr(storeMessage)}">Share store</button><button class="dash-action" data-share-url="${escAttr(storeUrl)}" data-share-channel="whatsapp" data-share-text="${escAttr(storeMessage)}">Share on WhatsApp</button><a class="dash-action" href="${escAttr(storeUrl)}" target="_blank" rel="noopener">View store ↗</a></div></div>
     <div class="dash-panel seller-marketing-panel"><h3>Your personal referral link</h3><p class="modal-intro">Invite buyers and business owners to ETHAN MARKET. Referrals are tracked separately from your store sales.</p><div class="growth-link-row"><input aria-label="Your personal referral link" readonly value="${escAttr(referralUrl)}"><button class="dash-action primary" data-growth-copy="${escAttr(referralUrl)}">Copy referral link</button></div><div class="growth-share-actions"><button class="dash-action primary" data-share-url="${escAttr(referralUrl)}" data-share-text="${escAttr(inviteMessage)}">Share referral link</button><button class="dash-action" data-share-url="${escAttr(referralUrl)}" data-share-channel="whatsapp" data-share-text="${escAttr(inviteMessage)}">Share on WhatsApp</button><button class="dash-action" data-dash-tab="growth">View referral performance</button></div></div>`;
   } else if(tab==='products') {
-    const products=data.products||[];
-    const counts={active:products.filter(p=>p.status==='active').length,pending:products.filter(p=>p.status==='pending').length,draft:products.filter(p=>p.status==='draft').length,rejected:products.filter(p=>p.status==='rejected').length};
-    el.innerHTML=`<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products</h3><p class="modal-intro">Upload physical goods or digital products. Every new or edited listing enters review before it goes live.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div><div class="metric-grid">${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Drafts',counts.draft)}${renderMetric('Needs attention',counts.rejected)}</div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>${products.map(p=>`<tr><td><div class="seller-product-cell">${p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':''}<strong>${html(p.name)}</strong></div></td><td>${money(p.price_kobo)}</td><td>${html(p.product_type)}</td><td>${p.product_type==='digital'?'—':p.stock_qty}</td><td>${statusPill(p.status)}</td><td><button class="dash-action" data-edit-product="${p.id}">Edit</button></td></tr>`).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6)}</tbody></table></div></div>`;
+    el.innerHTML=renderSellerProductsPanel(data);
   } else if(tab==='orders') {
     el.innerHTML=`<div class="dash-panel"><h3>Customer orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Customer</th><th>Quantity</th><th>Delivery</th><th>Update</th></tr></thead><tbody>${(data.orders||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong><br>${html(o.product_name)}<br><small>${formatDate(o.created_at)}</small></td><td>${html(o.recipient_name)}<br>${html(o.phone)}<br><small>${html([o.shipping_address?.line1,o.shipping_address?.city,o.shipping_address?.state].filter(Boolean).join(', '))}</small></td><td>${o.quantity}</td><td>${statusPill(o.fulfillment_status)}${o.tracking_number?`<br><small>${html(o.tracking_carrier)} ${html(o.tracking_number)}</small>`:''}</td><td><div class="dash-actions"><button class="dash-action" data-fulfill="${o.id}" data-status="processing">Processing</button><button class="dash-action primary" data-fulfill="${o.id}" data-status="dispatched">Dispatch / add tracking</button></div><small>Buyer confirms receipt in their order history.</small></td></tr>`).join('')||tableEmpty('No paid orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='disputes') {
@@ -855,6 +986,12 @@ document.addEventListener('click',async e=>{
   const close=e.target.closest('[data-close]');if(close){closeModal(close.dataset.close);return;}
   const category=e.target.closest('[data-category]');if(category){selectCategory(category.dataset.category);return;}
   const add=e.target.closest('[data-add]');if(add){addToCart(add.dataset.add);return;}
+  const compare=e.target.closest('[data-compare]');if(compare){toggleProductCompare(compare.dataset.compare);return;}
+  if(e.target.closest('#open-compare')){showProductComparison();return;}
+  if(e.target.closest('#clear-compare')){state.compare.clear();renderProducts();return;}
+  if(e.target.closest('#bulk-import-trigger')){$('#bulk-product-file').click();return;}
+  if(e.target.closest('#bulk-import-template')){downloadBulkProductTemplate();return;}
+  const stockSave=e.target.closest('[data-save-stock]');if(stockSave){const input=$('[data-stock-input="'+stockSave.dataset.saveStock+'"]');const stock=Number(input?.value);if(!Number.isInteger(stock)||stock<0||stock>1000000){notify('Enter a whole-number quantity from 0 to 1,000,000.');return;}stockSave.disabled=true;try{await api('seller.inventory.update',{id:stockSave.dataset.saveStock,stock_qty:stock});notify(stock===0?'Stock updated. Product is now out of stock.':'Inventory quantity updated.');await loadDashboardTab();}catch(error){notify(error.message);}finally{stockSave.disabled=false;}return;}
   const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){addToCart(detailAdd.dataset.detailAdd);closeModal('detail-modal');return;}
   const view=e.target.closest('[data-view]');if(view){showProduct(view.dataset.view);return;}
   const store=e.target.closest('[data-store]');if(store){showStore(store.dataset.store);return;}
@@ -927,6 +1064,7 @@ $('#product-form').addEventListener('submit',submitProduct);
 $('#product-type').addEventListener('change',updateProductType);
 $('#product-image-file').addEventListener('change',uploadProductImage);
 $('#product-image').addEventListener('input',e=>renderProductImagePreview(e.target.value));
+$('#bulk-product-file').addEventListener('change',e=>{const file=e.target.files?.[0];if(file)importSellerCsv(file);});
 $('#product-image-clear').addEventListener('click',()=>{
   $('#product-image').value='';
   $('#product-image-file').value='';
