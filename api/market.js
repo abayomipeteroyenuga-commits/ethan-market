@@ -270,6 +270,52 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_disputes_status_idx ON market_disputes(status,opened_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_disputes_seller_idx ON market_disputes(seller_id,status,opened_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_product_questions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id uuid NOT NULL REFERENCES market_products(id) ON DELETE CASCADE,
+    asker_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    question text NOT NULL CHECK (char_length(question) BETWEEN 10 AND 1000),
+    answer text NOT NULL DEFAULT '',
+    answered_by uuid REFERENCES market_users(id) ON DELETE SET NULL,
+    status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','answered','hidden')),
+    created_at timestamptz NOT NULL DEFAULT now(), answered_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_product_questions_public_idx ON market_product_questions(product_id,status,created_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS market_product_questions_asker_idx ON market_product_questions(asker_id,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_conversations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    buyer_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    seller_user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    context_type text NOT NULL CHECK (context_type IN ('product','order')),
+    product_id uuid REFERENCES market_products(id) ON DELETE SET NULL,
+    order_item_id uuid REFERENCES market_order_items(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (buyer_id <> seller_user_id),
+    CHECK ((context_type='product' AND product_id IS NOT NULL AND order_item_id IS NULL)
+        OR (context_type='order' AND product_id IS NULL AND order_item_id IS NOT NULL))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_conversations_product_uq ON market_conversations(buyer_id,seller_user_id,product_id) WHERE context_type='product'`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_conversations_order_uq ON market_conversations(order_item_id) WHERE context_type='order'`,
+  `CREATE INDEX IF NOT EXISTS market_conversations_buyer_idx ON market_conversations(buyer_id,updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS market_conversations_seller_idx ON market_conversations(seller_user_id,updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS market_messages (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id uuid NOT NULL REFERENCES market_conversations(id) ON DELETE CASCADE,
+    sender_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
+    body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 2000),
+    created_at timestamptz NOT NULL DEFAULT now(), read_at timestamptz
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_messages_thread_idx ON market_messages(conversation_id,created_at ASC)`,
+  `CREATE INDEX IF NOT EXISTS market_messages_unread_idx ON market_messages(conversation_id,read_at) WHERE read_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS market_delivery_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_item_id uuid NOT NULL REFERENCES market_order_items(id) ON DELETE CASCADE,
+    status text NOT NULL CHECK (status IN ('processing','dispatched','delivered','cancelled')),
+    note text NOT NULL DEFAULT '', carrier text NOT NULL DEFAULT '', tracking_number text NOT NULL DEFAULT '',
+    actor_id uuid REFERENCES market_users(id) ON DELETE SET NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_delivery_events_item_idx ON market_delivery_events(order_item_id,created_at ASC)`,
   `CREATE TABLE IF NOT EXISTS market_notifications (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
@@ -330,7 +376,7 @@ async function ensureSchema() {
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_product_variants','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
-      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events'
+      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events','market_product_questions','market_conversations','market_messages','market_delivery_events'
     ];
     const countTables = async (executor) => {
       const result = await executor.query(
@@ -351,7 +397,16 @@ async function ensureSchema() {
         [['market_product_variants_seller_idx','market_order_items_variant_idx']]);
       return Number(result.rows[0]?.count||0)===2;
     };
-    if (await countTables(db) === requiredTables.length && await hasVariantColumns(db) && await hasVariantIndexes(db)) return;
+    const hasCommunicationIndexes = async (executor) => {
+      const result=await executor.query(`SELECT COUNT(*)::int AS count FROM pg_indexes
+        WHERE schemaname='public' AND indexname=ANY($1::text[])`,
+        [['market_product_questions_public_idx','market_conversations_product_uq','market_conversations_order_uq',
+          'market_conversations_buyer_idx','market_conversations_seller_idx','market_messages_thread_idx',
+          'market_messages_unread_idx','market_delivery_events_item_idx']]);
+      return Number(result.rows[0]?.count||0)===8;
+    };
+    if (await countTables(db) === requiredTables.length && await hasVariantColumns(db) &&
+        await hasVariantIndexes(db) && await hasCommunicationIndexes(db)) return;
 
     // Serialize only a genuine schema bootstrap. Re-check after obtaining the
     // lock in case another cold-start instance completed it while we waited.
@@ -361,7 +416,7 @@ async function ensureSchema() {
     try {
       await client.query('SELECT pg_advisory_lock($1)', [lockKey]);
       locked = true;
-      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client)) || !(await hasVariantIndexes(client))) {
+      if (await countTables(client) !== requiredTables.length || !(await hasVariantColumns(client)) || !(await hasVariantIndexes(client)) || !(await hasCommunicationIndexes(client))) {
         for (const sql of schema) await client.query(sql);
       }
     } finally {
@@ -870,6 +925,119 @@ async function listProducts(db, params = {}) {
   return rows;
 }
 
+async function askProductQuestion(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller']);
+  const productId=text(body.product_id,80),question=text(body.question,1000);
+  if(question.length<10) throw new HttpError(400,'Write a question of at least 10 characters.');
+  await rateLimit(db,'product-question',user.id,6,60);
+  const product=await db.query(`SELECT p.id,p.name,s.user_id AS seller_user_id FROM market_products p
+    JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=$1 AND p.status='active' AND s.seller_status='approved'`,[productId]);
+  if(!product.rows.length) throw new HttpError(404,'This product is no longer available.');
+  if(product.rows[0].seller_user_id===user.id) throw new HttpError(400,'You cannot ask a question on your own product.');
+  const result=await db.query(`INSERT INTO market_product_questions(product_id,asker_id,question)
+    VALUES($1,$2,$3) RETURNING id,created_at`,[productId,user.id,question]);
+  await createNotification(db,product.rows[0].seller_user_id,{type:'product_question',title:'New product question',
+    message:user.full_name+' asked about '+product.rows[0].name+': '+question.slice(0,220),
+    target_tab:'questions',metadata:{question_id:result.rows[0].id,product_id:productId}});
+  await audit(db,user.id,'PRODUCT_QUESTION_SUBMITTED','product_question',result.rows[0].id,{product_id:productId});
+  return {question:result.rows[0]};
+}
+
+async function answerProductQuestion(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const seller=await getSellerByUser(db,user.id,true);
+  const id=text(body.question_id,80),answer=text(body.answer,1000);
+  if(answer.length<2) throw new HttpError(400,'Write an answer before submitting.');
+  const result=await db.query(`UPDATE market_product_questions q SET answer=$3,status='answered',answered_by=$4,answered_at=now()
+    FROM market_products p WHERE q.id=$1 AND p.id=q.product_id AND p.seller_id=$2 AND q.status='open'
+    RETURNING q.id,q.asker_id,q.product_id,p.name`,[id,seller.id,answer,user.id]);
+  if(!result.rows.length) throw new HttpError(404,'This open question was not found in your store.');
+  const row=result.rows[0];
+  await createNotification(db,row.asker_id,{type:'product_question_answered',title:'The seller answered your question',
+    message:'The seller of '+row.name+' replied to your product question.',target_tab:'orders',
+    metadata:{question_id:id,product_id:row.product_id}});
+  await audit(db,user.id,'PRODUCT_QUESTION_ANSWERED','product_question',id);
+  return {ok:true};
+}
+
+async function openMessageConversation(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller']);
+  const productId=text(body.product_id,80),itemId=text(body.order_item_id,80);
+  if(Boolean(productId)===Boolean(itemId)) throw new HttpError(400,'Choose a product enquiry or a specific order item.');
+  let buyerId,sellerUserId,contextType,contextId;
+  if(productId) {
+    const product=await db.query(`SELECT p.id,s.user_id AS seller_user_id FROM market_products p JOIN market_sellers s ON s.id=p.seller_id
+      WHERE p.id=$1 AND p.status='active' AND s.seller_status='approved'`,[productId]);
+    if(!product.rows.length) throw new HttpError(404,'This product is no longer available.');
+    sellerUserId=product.rows[0].seller_user_id;buyerId=user.id;contextType='product';contextId=productId;
+    if(sellerUserId===user.id) throw new HttpError(400,'You cannot message yourself about your own product.');
+  } else {
+    const item=await db.query(`SELECT oi.id,o.buyer_id,s.user_id AS seller_user_id,o.payment_status FROM market_order_items oi
+      JOIN market_orders o ON o.id=oi.order_id JOIN market_sellers s ON s.id=oi.seller_id WHERE oi.id=$1`,[itemId]);
+    if(!item.rows.length) throw new HttpError(404,'Order item not found.');
+    const row=item.rows[0];
+    if(row.payment_status!=='paid') throw new HttpError(409,'Order conversations open after payment is confirmed.');
+    if(user.id!==row.buyer_id && user.id!==row.seller_user_id) throw new HttpError(403,'You are not a participant in this order.');
+    buyerId=row.buyer_id;sellerUserId=row.seller_user_id;contextType='order';contextId=itemId;
+  }
+  const result=contextType==='product'
+    ? await db.query(`INSERT INTO market_conversations(buyer_id,seller_user_id,context_type,product_id)
+        VALUES($1,$2,'product',$3) ON CONFLICT (buyer_id,seller_user_id,product_id) WHERE context_type='product'
+        DO UPDATE SET updated_at=now() RETURNING id`,[buyerId,sellerUserId,contextId])
+    : await db.query(`INSERT INTO market_conversations(buyer_id,seller_user_id,context_type,order_item_id)
+        VALUES($1,$2,'order',$3) ON CONFLICT (order_item_id) WHERE context_type='order'
+        DO UPDATE SET updated_at=now() RETURNING id`,[buyerId,sellerUserId,contextId]);
+  return {conversation_id:result.rows[0].id};
+}
+
+async function messageThreads(db,req) {
+  const user=await requireRole(req,db,['buyer','seller']);
+  const result=await db.query(`SELECT c.id,c.context_type,c.updated_at,
+      CASE WHEN c.buyer_id=$1 THEN su.full_name ELSE bu.full_name END AS other_name,
+      COALESCE(p.name,oi.product_name,'ETHAN MARKET conversation') AS context_title,
+      o.order_number,latest.body AS last_message,latest.created_at AS last_message_at,
+      (SELECT count(*)::int FROM market_messages unread WHERE unread.conversation_id=c.id
+        AND unread.sender_id<>$1 AND unread.read_at IS NULL) AS unread_count
+    FROM market_conversations c JOIN market_users bu ON bu.id=c.buyer_id JOIN market_users su ON su.id=c.seller_user_id
+    LEFT JOIN market_products p ON p.id=c.product_id LEFT JOIN market_order_items oi ON oi.id=c.order_item_id
+    LEFT JOIN market_orders o ON o.id=oi.order_id
+    LEFT JOIN LATERAL (SELECT m.body,m.created_at FROM market_messages m WHERE m.conversation_id=c.id ORDER BY m.created_at DESC LIMIT 1) latest ON true
+    WHERE c.buyer_id=$1 OR c.seller_user_id=$1
+    ORDER BY COALESCE(latest.created_at,c.updated_at) DESC LIMIT 60`,[user.id]);
+  return {threads:result.rows};
+}
+
+async function messageThread(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller']),id=text(body.conversation_id,80);
+  const conversation=await db.query(`SELECT c.id,c.context_type,c.buyer_id,c.seller_user_id,
+      CASE WHEN c.buyer_id=$2 THEN su.full_name ELSE bu.full_name END AS other_name,
+      COALESCE(p.name,oi.product_name,'ETHAN MARKET conversation') AS context_title,o.order_number
+    FROM market_conversations c JOIN market_users bu ON bu.id=c.buyer_id JOIN market_users su ON su.id=c.seller_user_id
+    LEFT JOIN market_products p ON p.id=c.product_id LEFT JOIN market_order_items oi ON oi.id=c.order_item_id
+    LEFT JOIN market_orders o ON o.id=oi.order_id
+    WHERE c.id=$1 AND (c.buyer_id=$2 OR c.seller_user_id=$2) LIMIT 1`,[id,user.id]);
+  if(!conversation.rows.length) throw new HttpError(404,'Conversation not found.');
+  await db.query('UPDATE market_messages SET read_at=now() WHERE conversation_id=$1 AND sender_id<>$2 AND read_at IS NULL',[id,user.id]);
+  const messages=await db.query('SELECT id,sender_id,body,created_at,read_at FROM market_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 100',[id]);
+  return {conversation:conversation.rows[0],messages:messages.rows.reverse()};
+}
+
+async function sendMessage(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller']),id=text(body.conversation_id,80),message=text(body.message,2000);
+  if(!message) throw new HttpError(400,'Write a message before sending.');
+  await rateLimit(db,'market-message',user.id,50,15);
+  const result=await db.query('SELECT id,buyer_id,seller_user_id FROM market_conversations WHERE id=$1 AND (buyer_id=$2 OR seller_user_id=$2) LIMIT 1',[id,user.id]);
+  if(!result.rows.length) throw new HttpError(404,'Conversation not found.');
+  const conversation=result.rows[0],recipient=conversation.buyer_id===user.id?conversation.seller_user_id:conversation.buyer_id;
+  const inserted=await db.query(`INSERT INTO market_messages(conversation_id,sender_id,body) VALUES($1,$2,$3)
+    RETURNING id,sender_id,body,created_at,read_at`,[id,user.id,message]);
+  await db.query('UPDATE market_conversations SET updated_at=now() WHERE id=$1',[id]);
+  await createNotification(db,recipient,{type:'market_message',title:'New ETHAN MARKET message',
+    message:user.full_name+' sent you a message: '+message.slice(0,180),target_tab:'messages',
+    metadata:{conversation_id:id,message_id:inserted.rows[0].id}});
+  return {message:inserted.rows[0]};
+}
+
 async function productDetail(db, idOrSlug) {
   const { rows } = await db.query(
     `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.featured,p.created_at,
@@ -883,7 +1051,11 @@ async function productDetail(db, idOrSlug) {
   await db.query('UPDATE market_products SET views=views+1 WHERE id=$1', [rows[0].id]);
   const variants=await db.query(`SELECT id,label,sku,price_kobo,stock_qty
     FROM market_product_variants WHERE product_id=$1 AND is_active=true ORDER BY label`,[rows[0].id]);
-  return {...rows[0],variants:variants.rows};
+  const questions=await db.query(`SELECT q.id,q.question,q.answer,q.status,q.created_at,q.answered_at,
+      split_part(au.full_name,' ',1) AS asker_name
+    FROM market_product_questions q JOIN market_users au ON au.id=q.asker_id
+    WHERE q.product_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at DESC LIMIT 20`,[rows[0].id]);
+  return {...rows[0],variants:variants.rows,questions:questions.rows};
 }
 
 async function getSellerByUser(db, userId, mustApproved = true) {
@@ -933,7 +1105,7 @@ async function createNotification(db, userId, fields = {}) {
   const type=text(fields.type,60)||'market_update';
   const title=text(fields.title,140)||'ETHAN MARKET update';
   const message=text(fields.message,500);
-  const targetTab=['orders','products','disputes','payouts','overview','growth','sellers'].includes(fields.target_tab)?fields.target_tab:'orders';
+  const targetTab=['orders','products','disputes','payouts','overview','growth','sellers','messages','questions'].includes(fields.target_tab)?fields.target_tab:'orders';
   const dedupeKey=text(fields.dedupe_key,180);
   const metadata=fields.metadata&&typeof fields.metadata==='object'?fields.metadata:{};
   await db.query(
@@ -1003,6 +1175,11 @@ async function sellerDashboard(db, req) {
       GROUP BY oi.product_id,oi.product_name ORDER BY SUM(oi.unit_price_kobo*oi.quantity) DESC LIMIT 5`,[seller.id]),
     db.query('SELECT COALESCE(SUM(views),0)::text AS total_views FROM market_products WHERE seller_id=$1',[seller.id])
   ]);
+  const questions=await db.query(`SELECT q.id,q.question,q.answer,q.status,q.created_at,p.name AS product_name,
+      split_part(u.full_name,' ',1) AS asker_name
+    FROM market_product_questions q JOIN market_products p ON p.id=q.product_id JOIN market_users u ON u.id=q.asker_id
+    WHERE p.seller_id=$1 AND q.status IN ('open','answered')
+    ORDER BY CASE WHEN q.status='open' THEN 0 ELSE 1 END,q.created_at DESC LIMIT 100`,[seller.id]);
   const variants=await db.query(`SELECT id,product_id,label,sku,price_kobo,stock_qty
     FROM market_product_variants WHERE seller_id=$1 AND is_active=true ORDER BY product_id,label`,[seller.id]);
   const variantMap=new Map();
@@ -1015,7 +1192,7 @@ async function sellerDashboard(db, req) {
   const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
     seller: sellerPublic(seller), products: products.rows, orders: orders.rows,
-    payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
+    payouts: payouts.rows, disputes: disputes.rows, questions:questions.rows, totals: totals.rows[0],
     analytics: {
       summary: salesSummary.rows[0],
       total_views: Number(totalViews.rows[0]?.total_views||0),
@@ -1520,6 +1697,7 @@ async function buyerOrders(db,req) {
       json_agg(json_build_object('id',oi.id,'product_id',oi.product_id,'product_name',oi.product_name,'variant_label',oi.variant_label,'variant_sku',oi.variant_sku,'product_type',oi.product_type,'quantity',oi.quantity,
        'unit_price_kobo',oi.unit_price_kobo,'fulfillment_status',oi.fulfillment_status,'tracking_number',oi.tracking_number,'tracking_carrier',oi.tracking_carrier,
        'buyer_confirmed_at',oi.buyer_confirmed_at,'delivered_at',oi.delivered_at,'payout_status',p.status,'payout_eligible_at',p.eligible_at,
+       'tracking_events',(SELECT COALESCE(json_agg(json_build_object('status',de.status,'note',de.note,'carrier',de.carrier,'tracking_number',de.tracking_number,'created_at',de.created_at) ORDER BY de.created_at),'[]'::json) FROM market_delivery_events de WHERE de.order_item_id=oi.id),
        'dispute_id',d.id,'dispute_status',d.status,'dispute_reason',d.reason,
        'download_url',CASE WHEN oi.product_type='digital' AND o.payment_status='paid' THEN oi.digital_delivery_url ELSE '' END)
        ORDER BY oi.created_at) AS items
@@ -1575,6 +1753,8 @@ async function sellerFulfill(db,req,body) {
      RETURNING order_id`,[itemId,seller.id,status,text(body.tracking_number,100),text(body.tracking_carrier,100)]
   );
   if(!rows.length) throw new HttpError(404,'Paid order item not found for this seller.');
+  await db.query(`INSERT INTO market_delivery_events(order_item_id,status,note,carrier,tracking_number,actor_id)
+    VALUES($1,$2,$3,$4,$5,$6)`,[itemId,status,status==='dispatched'?'Seller marked this item as dispatched.':'Seller started preparing this item.',text(body.tracking_carrier,100),text(body.tracking_number,100),user.id]);
   await db.query(
     `UPDATE market_orders o SET status=CASE
       WHEN NOT EXISTS(SELECT 1 FROM market_order_items i WHERE i.order_id=o.id AND i.fulfillment_status NOT IN ('delivered','cancelled')) THEN 'delivered'
@@ -1626,6 +1806,7 @@ async function buyerConfirmDelivery(db,req,body) {
       "UPDATE market_order_items SET fulfillment_status='delivered',delivered_at=COALESCE(delivered_at,now()),buyer_confirmed_at=now() WHERE id=$1",
       [itemId]
     );
+    await client.query(`INSERT INTO market_delivery_events(order_item_id,status,note,actor_id) VALUES($1,'delivered','Buyer confirmed receipt of this item.',$2)`,[itemId,user.id]);
     await client.query(
       `UPDATE market_payouts SET eligible_at=now()+($2::text||' days')::interval,
        hold_reason=$3, status=CASE WHEN status='held' THEN 'held' ELSE 'pending' END
@@ -1745,6 +1926,7 @@ async function adminConfirmDelivery(db,req,body) {
       "UPDATE market_order_items SET fulfillment_status='delivered',delivered_at=now() WHERE id=$1",
       [itemId]
     );
+    await client.query(`INSERT INTO market_delivery_events(order_item_id,status,note,actor_id) VALUES($1,'delivered','Delivery marked as verified by marketplace administration.',$2)`,[itemId,user.id]);
     await client.query(
       `UPDATE market_payouts SET eligible_at=now()+($2::text||' days')::interval,
        hold_reason=$3,status=CASE WHEN status='held' THEN 'held' ELSE 'pending' END
@@ -2097,6 +2279,12 @@ async function handle(db,req,res,body) {
   if(action==='seller.variant-stock.update') return updateSellerVariantInventory(db,req,body);
   if(action==='seller.products.bulk') return bulkSaveProducts(db,req,body);
   if(action==='seller.fulfill') return sellerFulfill(db,req,body);
+  if(action==='questions.ask') return askProductQuestion(db,req,body);
+  if(action==='questions.answer') return answerProductQuestion(db,req,body);
+  if(action==='messages.open') return openMessageConversation(db,req,body);
+  if(action==='messages.threads') return messageThreads(db,req);
+  if(action==='messages.thread') return messageThread(db,req,body);
+  if(action==='messages.send') return sendMessage(db,req,body);
   if(action==='buyer.orders') return buyerOrders(db,req);
   if(action==='buyer.confirm-delivery') return buyerConfirmDelivery(db,req,body);
   if(action==='buyer.open-dispute') return buyerOpenDispute(db,req,body);
