@@ -1045,10 +1045,10 @@ async function saveProduct(db,req,body){
  if(type==='physical'&&stock<1)throw new HttpError(400,'A physical product needs at least one item in stock.');
  const productId=text(body.id,80),variantsJson=JSON.stringify(variants);
  if(productId){
-  const pending=await db.query("SELECT oi.variant_id::text AS variant_id,SUM(oi.quantity)::int AS quantity FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.product_type='physical' AND oi.variant_id IS NOT NULL AND o.payment_status='pending' AND o.created_at>=now()-interval '30 minutes' GROUP BY oi.variant_id",[productId]);
+  const pending=await db.query("SELECT oi.variant_id::text AS variant_id,SUM(oi.quantity)::int AS quantity FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.product_type='physical' AND o.payment_status='pending' AND o.created_at>=now()-interval '30 minutes' GROUP BY oi.variant_id",[productId]);
   const reservedTotal=pending.rows.reduce((n,row)=>n+Number(row.quantity||0),0);
-  if(variants.length){for(const row of pending.rows){const next=variants.find(v=>v.id===row.variant_id);if(!next||next.stock_qty<Number(row.quantity))throw new HttpError(409,'A variation has a pending checkout. Keep that option and its stock at or above the reserved quantity until checkout expires.');}}
-  else if(reservedTotal>stock)throw new HttpError(409,'Some stock is reserved by pending checkouts. Keep available stock at or above '+reservedTotal+' until those checkouts expire.');
+  if(variants.length){for(const row of pending.rows){const next=variants.find(v=>v.id===row.variant_id);if(!row.variant_id||!next||next.stock_qty<Number(row.quantity))throw new HttpError(409,'A product option has a pending checkout. Keep the option and its stock at or above the reserved quantity until checkout expires.');}}
+  else if(pending.rows.some(row=>row.variant_id)||reservedTotal>stock)throw new HttpError(409,'Stock is reserved by pending checkouts. Keep those options and available stock unchanged until checkout expires.');
   const result=await db.query("UPDATE market_products SET category_id=$3,name=$4,description=$5,product_type=$6,price_kobo=$7,compare_at_kobo=$8,image_url=$9,sku=$10,stock_qty=$11,digital_delivery_url=$12,variants=$13::jsonb,status='pending',featured=false,updated_at=now() WHERE id=$1 AND seller_id=$2 RETURNING id,name,status,price_kobo,product_type,stock_qty,variants",
   [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'',variantsJson]);
   if(!result.rows.length)throw new HttpError(404,'Product was not found in your store.');
