@@ -215,9 +215,9 @@ const schema = [
     seller_net_kobo bigint NOT NULL DEFAULT 0, fulfillment_status text NOT NULL DEFAULT 'unfulfilled'
       CHECK (fulfillment_status IN ('unfulfilled','processing','dispatched','delivered','cancelled')),
     tracking_number text NOT NULL DEFAULT '', tracking_carrier text NOT NULL DEFAULT '', digital_delivery_url text NOT NULL DEFAULT '',
-    stock_deducted boolean NOT NULL DEFAULT false, variant_id text NOT NULL DEFAULT '', variant_label text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now()
+    stock_deducted boolean NOT NULL DEFAULT false, variant_id uuid, variant_label text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now()
   )`,
-  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_id text NOT NULL DEFAULT ''`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_id uuid`,
   `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_label text NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS market_order_items_seller_idx ON market_order_items(seller_id, fulfillment_status, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS market_payments (
@@ -1197,7 +1197,7 @@ async function checkout(db, req, body) {
       await dbClient.query(
         `INSERT INTO market_order_items(order_id,product_id,seller_id,product_name,product_type,quantity,unit_price_kobo,commission_kobo,seller_net_kobo,digital_delivery_url,fulfillment_status,variant_id,variant_label)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [orderId,it.p.id,it.p.seller_id,it.p.name+(it.variantLabel?' — '+it.variantLabel:''),it.p.product_type,it.quantity,it.unitPrice,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled',it.variantId,it.variantLabel]
+        [orderId,it.p.id,it.p.seller_id,it.p.name+(it.variantLabel?' — '+it.variantLabel:''),it.p.product_type,it.quantity,it.unitPrice,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled',it.variantId||null,it.variantLabel]
       );
     }
     await dbClient.query('INSERT INTO market_payments(order_id,reference,amount_kobo) VALUES($1,$2,$3)',[orderId,ref,total]);
