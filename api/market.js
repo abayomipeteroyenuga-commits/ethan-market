@@ -271,6 +271,13 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS market_notifications_user_idx ON market_notifications(user_id,created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_notifications_unread_idx ON market_notifications(user_id,created_at DESC) WHERE read_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS market_inventory_alert_state (
+    product_id uuid NOT NULL REFERENCES market_products(id) ON DELETE CASCADE,
+    variant_key text NOT NULL DEFAULT '', low_stock boolean NOT NULL DEFAULT false,
+    stock_qty int NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(product_id,variant_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS market_inventory_alert_low_idx ON market_inventory_alert_state(updated_at DESC) WHERE low_stock=true`,
   `CREATE UNIQUE INDEX IF NOT EXISTS market_notifications_dedupe_uq ON market_notifications(user_id,dedupe_key) WHERE dedupe_key <> ''`,
   `CREATE TABLE IF NOT EXISTS market_wishlists (
     user_id uuid NOT NULL REFERENCES market_users(id) ON DELETE CASCADE,
@@ -331,7 +338,7 @@ async function ensureSchema() {
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_schema_migrations','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
-      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events','market_delivery_zones'
+      'market_audit_logs','market_rate_limits','market_notifications','market_inventory_alert_state','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events','market_delivery_zones'
     ];
     const countTables = async (executor) => {
       const result = await executor.query(
@@ -939,6 +946,48 @@ async function createNotification(db, userId, fields = {}) {
   );
 }
 
+
+async function notifyInventoryLevels(db, productId) {
+  const {rows}=await db.query(
+    `SELECT p.id,p.name,p.product_type,p.stock_qty,p.variants,s.user_id AS seller_user_id,s.store_name
+     FROM market_products p JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=$1 LIMIT 1`,[productId]
+  );
+  const product=rows[0];
+  if(!product || product.product_type!=='physical') return;
+  const threshold=5;
+  const variants=Array.isArray(product.variants)?product.variants:[];
+  const levels=variants.length
+    ? variants.filter(v=>v.active!==false).map(v=>({key:String(v.id||''),label:String(v.name||'Option'),stock:Number(v.stock_qty||0)}))
+    : [{key:'',label:'',stock:Number(product.stock_qty||0)}];
+  const admins=await db.query("SELECT id FROM market_users WHERE role IN ('admin','super_admin') AND is_active=true");
+  for(const level of levels) {
+    const low=level.stock<=threshold;
+    const changed=await db.query(
+      `INSERT INTO market_inventory_alert_state(product_id,variant_key,low_stock,stock_qty)
+       VALUES($1,$2,$3,$4)
+       ON CONFLICT(product_id,variant_key) DO UPDATE
+       SET low_stock=EXCLUDED.low_stock,stock_qty=EXCLUDED.stock_qty,updated_at=now()
+       WHERE market_inventory_alert_state.low_stock IS DISTINCT FROM EXCLUDED.low_stock
+       RETURNING low_stock`,
+      [product.id,level.key,low,level.stock]
+    );
+    if(!low || changed.rows[0]?.low_stock!==true) continue;
+    const option=level.label?' ('+level.label+')':'';
+    const message=`${product.name}${option} has only ${level.stock} unit(s) left in ${product.store_name}. Restock or update the listing.`;
+    const dedupe=`inventory-low:${product.id}:${level.key||'base'}:${Date.now()}`;
+    await createNotification(db,product.seller_user_id,{
+      type:'inventory_low_stock',title:'Low stock warning',message,
+      target_tab:'products',dedupe_key:dedupe,
+      metadata:{product_id:product.id,variant_id:level.key||null,stock_qty:level.stock,threshold}
+    });
+    for(const admin of admins.rows) await createNotification(db,admin.id,{
+      type:'admin_inventory_low_stock',title:'Marketplace inventory alert',message,
+      target_tab:'products',dedupe_key:dedupe+':'+admin.id,
+      metadata:{product_id:product.id,variant_id:level.key||null,store_name:product.store_name,stock_qty:level.stock,threshold}
+    });
+  }
+}
+
 async function notificationsList(db, req) {
   const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
   const [items,unread]=await Promise.all([
@@ -997,8 +1046,16 @@ async function sellerDashboard(db, req) {
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
+  const lowStock = products.rows.flatMap(p => {
+    if(p.product_type!=='physical') return [];
+    const variants=Array.isArray(p.variants)?p.variants.filter(v=>v.active!==false):[];
+    return variants.length
+      ? variants.filter(v=>Number(v.stock_qty||0)<=5).map(v=>({product_id:p.id,product_name:p.name,variant_id:v.id,variant_name:v.name,stock_qty:Number(v.stock_qty||0)}))
+      : Number(p.stock_qty||0)<=5?[{product_id:p.id,product_name:p.name,variant_id:null,variant_name:'',stock_qty:Number(p.stock_qty||0)}]:[];
+  }).sort((a,b)=>a.stock_qty-b.stock_qty);
+  const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
-    seller: sellerPublic(seller), products: products.rows, orders: orders.rows,
+    seller: sellerPublic(seller), products: products.rows, low_stock:lowStock, low_stock_threshold:5, orders: orders.rows,
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
     sales_analytics: {summary:salesSummary.rows[0],daily:dailySales.rows,top_products:topProducts.rows},
     referral_url: 'https://market.ethandigitalacademy.org/?ref=' + encodeURIComponent(growthProfile.referral_code)
@@ -1052,11 +1109,13 @@ async function saveProduct(db,req,body){
   const result=await db.query("UPDATE market_products SET category_id=$3,name=$4,description=$5,product_type=$6,price_kobo=$7,compare_at_kobo=$8,image_url=$9,sku=$10,stock_qty=$11,digital_delivery_url=$12,variants=$13::jsonb,status='pending',featured=false,updated_at=now() WHERE id=$1 AND seller_id=$2 RETURNING id,name,status,price_kobo,product_type,stock_qty,variants",
   [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'',variantsJson]);
   if(!result.rows.length)throw new HttpError(404,'Product was not found in your store.');
+  await notifyInventoryLevels(db,productId);
   await audit(db,user.id,'PRODUCT_UPDATED','product',productId,{variation_count:variants.length});return {product:result.rows[0]};
  }
  const slug=slugify(name)+'-'+crypto.randomBytes(2).toString('hex');
  const result=await db.query("INSERT INTO market_products(seller_id,category_id,name,slug,description,product_type,price_kobo,compare_at_kobo,image_url,sku,stock_qty,digital_delivery_url,variants,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty,variants",
  [seller.id,category.rows[0].id,name,slug,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'',variantsJson]);
+ await notifyInventoryLevels(db,result.rows[0].id);
  await audit(db,user.id,'PRODUCT_SUBMITTED','product',result.rows[0].id,{variation_count:variants.length});return {product:result.rows[0]};
 }
 
@@ -1268,7 +1327,9 @@ async function finalizePaid(db, transaction) {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
       const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,quantity,variant_id',[order.id]);
-      for(const row of changed)if(row.product_id){await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);if(row.variant_id)await client.query("UPDATE market_products SET variants=(SELECT COALESCE(jsonb_agg(CASE WHEN v->>'id'=$2 THEN jsonb_set(v,'{stock_qty}',to_jsonb(GREATEST(COALESCE((v->>'stock_qty')::int,0)-$3,0))) ELSE v END),'[]'::jsonb) FROM jsonb_array_elements(variants) v),updated_at=now() WHERE id=$1",[row.product_id,row.variant_id,row.quantity]);}
+      const changedProductIds=new Set();
+      for(const row of changed)if(row.product_id){await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);if(row.variant_id)await client.query("UPDATE market_products SET variants=(SELECT COALESCE(jsonb_agg(CASE WHEN v->>'id'=$2 THEN jsonb_set(v,'{stock_qty}',to_jsonb(GREATEST(COALESCE((v->>'stock_qty')::int,0)-$3,0))) ELSE v END),'[]'::jsonb) FROM jsonb_array_elements(variants) v),updated_at=now() WHERE id=$1",[row.product_id,row.variant_id,row.quantity]);changedProductIds.add(row.product_id);}
+      for(const changedProductId of changedProductIds) await notifyInventoryLevels(client,changedProductId);
       const holdSetting=await client.query("SELECT value FROM market_settings WHERE key='seller_payout_hold_days'");
       const holdDays=Math.min(30,Math.max(1,Number(holdSetting.rows[0]?.value)||7));
       await client.query(
@@ -1709,7 +1770,7 @@ async function adminResolveDispute(db,req,body) {
 
 async function adminOverview(db,req) {
   const user=await requireRole(req,db,['admin','super_admin']);
-  const [orders,products,sellers,payouts,recent,finance]=await Promise.all([
+  const [orders,products,sellers,payouts,recent,finance,inventory]=await Promise.all([
     db.query(`SELECT count(*) AS count,COALESCE(sum(total_kobo) FILTER(WHERE payment_status='paid'),0) AS gmv,
       count(*) FILTER(WHERE payment_status='paid') AS paid_orders,count(*) FILTER(WHERE payment_status='pending') AS awaiting_payment FROM market_orders`),
     db.query("SELECT count(*) AS total,count(*) FILTER(WHERE status='active') AS active,count(*) FILTER(WHERE status='pending') AS pending FROM market_products"),
@@ -1718,9 +1779,17 @@ async function adminOverview(db,req) {
     db.query(`SELECT o.id,o.order_number,o.buyer_email,o.total_kobo,o.payment_status,o.status,o.created_at FROM market_orders o ORDER BY o.created_at DESC LIMIT 8`),
     db.query(`SELECT
       COALESCE((SELECT sum(oi.commission_kobo) FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE o.payment_status='paid'),0)::bigint AS marketplace_commission_kobo,
-      COALESCE((SELECT sum(p.gateway_fee_kobo) FROM market_payments p JOIN market_orders o ON o.id=p.order_id WHERE o.payment_status='paid'),0)::bigint AS gateway_fee_kobo`)
+      COALESCE((SELECT sum(p.gateway_fee_kobo) FROM market_payments p JOIN market_orders o ON o.id=p.order_id WHERE o.payment_status='paid'),0)::bigint AS gateway_fee_kobo`),
+    db.query(`SELECT p.id AS product_id,p.name AS product_name,s.store_name,u.full_name AS seller_name,
+      CASE WHEN jsonb_array_length(p.variants)>0 THEN COALESCE(v->>'name','') ELSE '' END AS variant_name,
+      CASE WHEN jsonb_array_length(p.variants)>0 THEN COALESCE((v->>'stock_qty')::int,0) ELSE p.stock_qty END AS stock_qty,
+      count(*) OVER()::int AS total_count
+      FROM market_products p JOIN market_sellers s ON s.id=p.seller_id JOIN market_users u ON u.id=s.user_id
+      LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(p.variants)='array' THEN p.variants ELSE '[]'::jsonb END) v ON true
+      WHERE p.product_type='physical' AND ((jsonb_array_length(p.variants)>0 AND COALESCE(v->>'active','true')<>'false' AND COALESCE((v->>'stock_qty')::int,0)<=5) OR (jsonb_array_length(p.variants)=0 AND p.stock_qty<=5))
+      ORDER BY stock_qty ASC,p.name LIMIT 50`)
   ]);
-  return {orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows,finance:finance.rows[0]};
+  return {orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows,finance:finance.rows[0],inventory:{threshold:5,low_stock_count:Number(inventory.rows[0]?.total_count||0),items:inventory.rows}};
 }
 
 async function adminList(db,req,kind) {
