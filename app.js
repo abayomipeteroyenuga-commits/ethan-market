@@ -88,9 +88,9 @@ function setAuthMode(mode) {
   $('#auth-password').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
   $('#auth-error').textContent = '';
 }
-function cartProducts() { return state.cart.map(item => ({ ...item, product: state.products.find(p => p.id === item.product_id) })).filter(item => item.product); }
-function cartCount() { return state.cart.reduce((sum, item) => sum + Number(item.quantity || 0), 0); }
-function cartSubtotal() { return cartProducts().reduce((sum, item) => sum + Number(item.product.price_kobo) * item.quantity, 0); }
+function cartProducts(){return state.cart.map(item=>{const product=state.products.find(p=>p.id===item.product_id);const variants=Array.isArray(product?.variants)?product.variants:[];const variant=variants.find(v=>v.id===item.variant_id);return {...item,product,variant,unit_price_kobo:variant?Number(variant.price_kobo):Number(product?.price_kobo||0)};}).filter(item=>item.product&&(!item.product.variants?.length||item.variant));}
+function cartCount(){return state.cart.reduce((sum,item)=>sum+Number(item.quantity||0),0);}
+function cartSubtotal(){return cartProducts().reduce((sum,item)=>sum+item.unit_price_kobo*item.quantity,0);}
 function hasPhysical() { return cartProducts().some(x => x.product.product_type === 'physical'); }
 function cartShipping() { return hasPhysical() ? Number(state.config.shipping_kobo || 200000) : 0; }
 function cartTotal() { return cartSubtotal() + cartShipping(); }
@@ -133,7 +133,7 @@ function renderProducts() {
         <button class="wishlist-button ${state.wishlist.has(p.id) ? 'saved' : ''}" data-wish="${escAttr(p.id)}" aria-label="${state.wishlist.has(p.id) ? 'Remove from' : 'Add to'} wishlist">${state.wishlist.has(p.id) ? '♥' : '♡'}</button>${imageContent(p)}</div>
       <div class="product-info"><span class="product-category">${html(p.category_name || 'Marketplace')}</span><h3><a class="product-title-link" href="/product/${encodeURIComponent(p.slug||'item')}/${encodeURIComponent(p.id)}">${html(p.name)}</a></h3><span class="seller-name">Sold by <a class="store-link" href="/store/${encodeURIComponent(p.store_slug||'')}">${html(p.store_name || 'Ethan seller')}</a></span>
         <div class="product-bottom"><strong class="product-price">${money(p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
-        <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button></div>
+        <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':p.variants?.length?'Choose options':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button></div>
       </div>
     </article>`).join('');
   $('#results-count').textContent = `${list.length} product${list.length === 1 ? '' : 's'} found`;
@@ -183,22 +183,21 @@ function renderCart() {
   updateCartCount();
   $('#cart-subtotal').textContent = money(cartSubtotal());
   $('#checkout-button').disabled = entries.length === 0;
-  $('#cart-items').innerHTML = entries.length ? entries.map(({product:p,quantity}) => `
-    <div class="cart-line"><div class="cart-thumb">${/^https:\/\//i.test(p.image_url || '') ? `<img src="${escAttr(p.image_url)}" alt="">` : '✧'}</div>
-      <div><strong>${html(p.name)}</strong><small>${money(p.price_kobo)} each · ${p.product_type === 'digital' ? 'Digital' : 'Physical'}</small><div class="quantity-control"><button data-qty="${escAttr(p.id)}" data-delta="-1" aria-label="Decrease quantity">−</button><span>${quantity}</span><button data-qty="${escAttr(p.id)}" data-delta="1" aria-label="Increase quantity">＋</button></div></div>
-      <strong class="cart-line-price">${money(Number(p.price_kobo)*quantity)}</strong></div>`).join('') : `<div class="cart-empty"><span>▢</span><b>Your bag is empty.</b><p>Start exploring and add something you love.</p></div>`;
+  $('#cart-items').innerHTML=entries.length?entries.map(({product:p,variant,variant_id,quantity,unit_price_kobo})=>`<div class="cart-line"><div class="cart-thumb">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="">`:'✧'}</div><div><strong>${html(p.name)}</strong><small>${variant?html(variant.name)+' · ':''}${money(unit_price_kobo)} each · ${p.product_type==='digital'?'Digital':'Physical'}</small><div class="quantity-control"><button data-qty="${escAttr(p.id)}" data-variant="${escAttr(variant_id||'')}" data-delta="-1" aria-label="Decrease quantity">−</button><span>${quantity}</span><button data-qty="${escAttr(p.id)}" data-variant="${escAttr(variant_id||'')}" data-delta="1" aria-label="Increase quantity">＋</button></div></div><strong class="cart-line-price">${money(unit_price_kobo*quantity)}</strong></div>`).join('') : `<div class="cart-empty"><span>▢</span><b>Your bag is empty.</b><p>Start exploring and add something you love.</p></div>`;
 }
-async function addToCart(productId) {
-  let product = state.products.find(p => p.id === productId);
-  if (!product) {
-    try { const result = await api('products.detail', { id: productId }); product = result.product; state.products.push(product); }
-    catch (e) { notify(e.message || 'This product is no longer available.'); return; }
-  }
-  const row = state.cart.find(x => x.product_id === productId);
-  const maxQuantity = product.product_type === 'physical' ? Math.max(0, Number(product.stock_qty || 0)) : 20;
-  if (maxQuantity < 1) { notify('This product is currently out of stock.'); return; }
-  if (row) { if (Number(row.quantity) >= maxQuantity) { notify('You have reached the available stock for this item.'); return; } row.quantity = Math.min(maxQuantity, Number(row.quantity) + 1); } else state.cart.push({ product_id: productId, quantity: 1 });
-  saveCart(); renderCart(); notify('Added to your shopping bag.');
+async function addToCart(productId,variantId=''){
+ let product=state.products.find(p=>p.id===productId);
+ if(!product){try{const result=await api('products.detail',{id:productId});product=result.product;state.products.push(product);}catch(e){notify(e.message||'This product is no longer available.');return;}}
+ const variants=Array.isArray(product.variants)?product.variants:[];
+ if(variants.length&&!variantId){showProduct(productId);notify('Choose a size, colour or option before adding this product.');return;}
+ const variant=variants.find(v=>v.id===variantId&&v.active!==false);
+ if(variants.length&&!variant){notify('Please choose an available product variation.');return;}
+ const stock=variant?Number(variant.stock_qty):product.product_type==='physical'?Number(product.stock_qty||0):20;
+ if(stock<1){notify('This item is currently out of stock.');return;}
+ const row=state.cart.find(x=>x.product_id===productId&&(x.variant_id||'')===(variantId||''));
+ if(row){if(Number(row.quantity)>=Math.min(stock,20)){notify('You have reached the available stock for this item.');return;}row.quantity++;}
+ else state.cart.push({product_id:productId,variant_id:variantId||'',quantity:1});
+ saveCart();renderCart();notify('Added to your shopping bag.');
 }
 async function hydrateCart() {
   const missing = state.cart.map(x => x.product_id).filter(id => !state.products.some(p => p.id === id));
@@ -207,11 +206,7 @@ async function hydrateCart() {
     catch { state.cart = state.cart.filter(x => x.product_id !== id); saveCart(); }
   }));
 }
-function changeQuantity(productId, delta) {
-  const item = state.cart.find(x => x.product_id === productId); if (!item) return;
-  item.quantity += delta; if (item.quantity <= 0) state.cart = state.cart.filter(x => x.product_id !== productId);
-  saveCart(); renderCart();
-}
+function changeQuantity(productId,delta,variantId=''){const item=state.cart.find(x=>x.product_id===productId&&(x.variant_id||'')===(variantId||''));if(!item)return;item.quantity+=delta;if(item.quantity<=0)state.cart=state.cart.filter(x=>!(x.product_id===productId&&(x.variant_id||'')===(variantId||'')));saveCart();renderCart();}
 async function syncWishlist() {
   if (!state.user) return;
   try { const data = await api('wishlist.list'); state.wishlist = new Set((data.products || []).map(p => p.id)); renderProducts(); } catch {}
@@ -221,15 +216,16 @@ async function toggleWishlist(productId) {
   try { const result = await api('wishlist.toggle',{product_id:productId}); if(result.saved) state.wishlist.add(productId); else state.wishlist.delete(productId); renderProducts(); notify(result.saved ? 'Saved to your wishlist.' : 'Removed from wishlist.'); }
   catch(e) { notify(e.message); }
 }
-async function showProduct(productId) {
-  try {
-    const found = state.products.find(p => p.id === productId);
-    if (!found) return;
-    const data = await api('products.detail',{id:productId}); const p = data.product; state.currentProduct = p;
-    trackGrowthEvent('product_view');
-    $('#detail-content').innerHTML = `<div class="detail-layout"><div class="detail-image">${/^https:\/\//i.test(p.image_url||'')?`<img src="${escAttr(p.image_url)}" alt="${escAttr(p.name)}">`:'✧'}</div><div class="detail-copy"><span class="product-category">${html(p.category_name||'Marketplace')}</span><h2 id="detail-name">${html(p.name)}</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="${escAttr(p.store_slug || '')}">${html(p.store_name)}</button> · ${html([p.city,p.state].filter(Boolean).join(', '))}</div><div class="detail-price">${money(p.price_kobo)}</div><div class="detail-meta"><span>${p.product_type==='digital'?'Digital delivery':'Physical product'}</span><span>${Number(p.stock_qty)>0?'In stock':'Check availability'}</span></div><p>${html(p.description)}</p><div class="detail-actions"><button class="button button-primary" data-detail-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':'Add to bag <span>＋</span>'}</button><button class="button button-outline" data-wish="${escAttr(p.id)}">♡ Save</button></div></div></div>`;
-    showModal('detail-modal');
-  } catch(e) { notify(e.message); }
+async function showProduct(productId){
+ try{
+  const data=await api('products.detail',{id:productId}),p=data.product;state.currentProduct=p;
+  const variants=Array.isArray(p.variants)?p.variants:[];
+  trackGrowthEvent('product_view');
+  const variantControl=variants.length?'<div class="form-field variant-picker"><label for="detail-variant">Choose size, colour or option *</label><select id="detail-variant"><option value="">Select an option</option>'+variants.filter(v=>v.active!==false).map(v=>'<option value="'+escAttr(v.id)+'" '+(Number(v.stock_qty)<1?'disabled':'')+'>'+html(v.name)+' — '+money(v.price_kobo)+' ('+Number(v.stock_qty)+' available)</option>').join('')+'</select></div>':'';
+  const totalStock=variants.length?variants.reduce((n,v)=>n+Number(v.stock_qty||0),0):Number(p.stock_qty||0);
+  $('#detail-content').innerHTML='<div class="detail-layout"><div class="detail-image">'+(/^https:\/\//i.test(p.image_url||'')?'<img src="'+escAttr(p.image_url)+'" alt="'+escAttr(p.name)+'">':'✧')+'</div><div class="detail-copy"><span class="product-category">'+html(p.category_name||'Marketplace')+'</span><h2 id="detail-name">'+html(p.name)+'</h2><div class="detail-store">Sold by <button class="store-link" type="button" data-store="'+escAttr(p.store_slug||'')+'">'+html(p.store_name)+'</button> · '+html([p.city,p.state].filter(Boolean).join(', '))+'</div><div class="detail-price">'+(variants.length?'From ':'')+money(variants.length?Math.min(...variants.map(v=>Number(v.price_kobo))):p.price_kobo)+'</div><div class="detail-meta"><span>'+(p.product_type==='digital'?'Digital delivery':'Physical product')+'</span><span>'+totalStock+' in stock</span></div><p>'+html(p.description)+'</p>'+variantControl+'<div class="detail-actions"><button class="button button-primary" data-detail-add="'+escAttr(p.id)+'" '+(totalStock<1?'disabled':'')+'>'+(variants.length?'Add selected option to bag <span>＋</span>':'Add to bag <span>＋</span>')+'</button><button class="button button-outline" data-wish="'+escAttr(p.id)+'">♡ Save</button></div></div></div>';
+  showModal('detail-modal');
+ }catch(e){notify(e.message);}
 }
 async function showStore(slug) {
   if (!slug) return;
@@ -606,6 +602,7 @@ function openProductEditor(product) {
     $('#product-image').value=product.image_url||'';
     $('#product-description').value=product.description||'';
     $('#digital-url').value=product.digital_delivery_url||'';
+    $('#product-variants').value=(product.variants||[]).map(v=>[v.name,v.sku,Number(v.price_kobo)===Number(product.price_kobo)?'':Number(v.price_kobo)/100,v.stock_qty].join(' | ')).join('\n');
   }
   renderProductImagePreview($('#product-image').value);
   updateProductType();
@@ -614,7 +611,8 @@ function openProductEditor(product) {
 }
 function updateProductType(){
   const isDigital=$('#product-type').value==='digital';
-  $('#product-stock-wrap').hidden=isDigital;
+  $('#product-stock-wrap').hidden=isDigital||!!$('#product-variants').value.trim();
+  $('#product-variants-wrap').hidden=isDigital;
   $('#digital-url-wrap').hidden=!isDigital;
   $('#product-stock').required=!isDigital;
   $('#product-stock').disabled=isDigital;
@@ -755,14 +753,18 @@ async function submitProduct(e){
   const imageUrl=$('#product-image').value.trim();
   const digitalUrl=$('#digital-url').value.trim();
   if(name.length<3){error.textContent='Enter a product name with at least 3 characters.';$('#product-name').focus();return;}
+  let variants=[];
   if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
   if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
   if(compare>0&&compare<=price){error.textContent='Previous price must be higher than the selling price.';$('#product-compare').focus();return;}
-  if(type==='physical'&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
+  if(type==='physical'&&!$('#product-variants').value.trim()&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
   if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
   if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
+  const variantLines=$('#product-variants').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  for(let i=0;i<variantLines.length;i++){const parts=variantLines[i].split('|').map(x=>x.trim());const vPrice=parts[2]?Number(parts[2]):0,vStock=Number(parts[3]);if(parts.length<3||!parts[0]||!Number.isInteger(vStock)||vStock<0||vStock>100000|| (parts[2]&&(!Number.isFinite(vPrice)||vPrice<1))){error.textContent='Check variation line '+(i+1)+'. Use: Option | SKU | Price (optional) | Stock.';return;}variants.push({name:parts[0],sku:parts[1]||'',price_kobo:vPrice?nairaToKobo(vPrice):null,stock_qty:vStock});}
+  if(variants.length>50){error.textContent='A product can have up to 50 variations.';return;}
   const payload={
-    id:$('#product-id').value,name,category_id:categoryId,product_type:type,
+    id:$('#product-id').value,name,category_id:categoryId,product_type:type,variants,
     price_kobo:nairaToKobo(price),compare_at_kobo:compare?nairaToKobo(compare):null,
     stock_qty:type==='digital'?0:stock,sku:$('#product-sku').value.trim(),
     image_url:imageUrl,description:$('#product-description').value.trim(),digital_delivery_url:digitalUrl
@@ -843,7 +845,7 @@ async function previewCheckout() {
   if(panel)panel.innerHTML='<small>Calculating your delivery estimate…</small>';
   try {
     const result=await api('checkout.preview',{
-      items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),
+      items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity})),
       state:$('#checkout-state').value,city:$('#checkout-city').value,
       code:$('#checkout-promo').value.trim().toUpperCase()
     });
@@ -958,13 +960,13 @@ async function sellerFulfillAction(el){
 document.addEventListener('click',async e=>{
   const close=e.target.closest('[data-close]');if(close){closeModal(close.dataset.close);return;}
   const category=e.target.closest('[data-category]');if(category){selectCategory(category.dataset.category);return;}
-  const add=e.target.closest('[data-add]');if(add){addToCart(add.dataset.add);return;}
-  const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){addToCart(detailAdd.dataset.detailAdd);closeModal('detail-modal');return;}
+  const add=e.target.closest('[data-add]');if(add){const p=state.products.find(x=>x.id===add.dataset.add);if(p?.variants?.length)showProduct(add.dataset.add);else addToCart(add.dataset.add);return;}
+  const detailAdd=e.target.closest('[data-detail-add]');if(detailAdd){const variantId=$('#detail-variant')?.value||'';if(state.currentProduct?.variants?.length&&!variantId){notify('Choose an available option first.');return;}addToCart(detailAdd.dataset.detailAdd,variantId);closeModal('detail-modal');return;}
   const view=e.target.closest('[data-view]');if(view){showProduct(view.dataset.view);return;}
   const store=e.target.closest('[data-store]');if(store){showStore(store.dataset.store);return;}
   const review=e.target.closest('[data-review]');if(review){const rating=Number(prompt('Rate this item from 1 to 5 stars:','5'));if(!Number.isInteger(rating)||rating<1||rating>5){notify('Enter a rating from 1 to 5.');return;}const reviewText=prompt('Write a short review (optional):','')||'';try{await api('reviews.create',{product_id:review.dataset.review,order_id:review.dataset.order,rating,review_text:reviewText});notify('Thank you. Your review has been submitted.');}catch(err){notify(err.message);}return;}
   const wish=e.target.closest('[data-wish]');if(wish){toggleWishlist(wish.dataset.wish);return;}
-  const qty=e.target.closest('[data-qty]');if(qty){changeQuantity(qty.dataset.qty,Number(qty.dataset.delta));return;}
+  const qty=e.target.closest('[data-qty]');if(qty){changeQuantity(qty.dataset.qty,Number(qty.dataset.delta),qty.dataset.variant||'');return;}
   const authMode=e.target.closest('[data-auth-mode]');if(authMode){setAuthMode(authMode.dataset.authMode);return;}
   const dashTab=e.target.closest('[data-dash-tab]');if(dashTab){state.dashboardTab=dashTab.dataset.dashTab;loadDashboardTab();return;}
   const notificationOpen=e.target.closest('[data-notification-open]');if(notificationOpen){openNotificationAction(notificationOpen);return;}

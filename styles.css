@@ -120,3 +120,6 @@
 .seller-bulk-import #bulk-preview-wrap{margin-top:16px}
 .seller-bulk-import #bulk-preview-rows td{max-width:220px;overflow-wrap:anywhere}
 .seller-bulk-import #bulk-submit-button:disabled{opacity:.45;cursor:not-allowed}
+
+/* Product variations and per-option inventory */
+.variant-picker{margin-top:16px}.variant-picker select{width:100%;padding:11px;border:1px solid #dfe6e9;border-radius:8px;background:#fff;color:#18334e}.detail-copy .variant-picker label{display:block;margin-bottom:7px;color:#536575;font-size:10px;font-weight:700}
