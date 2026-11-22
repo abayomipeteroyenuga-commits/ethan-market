@@ -1013,7 +1013,7 @@ async function notificationsMarkRead(db, req, body) {
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
-  const [products, orders, payouts, disputes, salesSummary, dailySales, topProducts] = await Promise.all([
+  const [products, orders, payouts, disputes, salesSummary, dailySales, topProducts, weeklySummary, weeklyTopProducts] = await Promise.all([
     db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.variants,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
     db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
@@ -1042,8 +1042,28 @@ async function sellerDashboard(db, req) {
       COALESCE(sum(oi.quantity),0)::bigint AS units,count(DISTINCT o.id)::int AS orders
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
       WHERE oi.seller_id=$1 AND o.payment_status='paid'
+      GROUP BY oi.product_id,oi.product_name ORDER BY sales_kobo DESC,units DESC LIMIT 5`,[seller.id]),
+    db.query(`SELECT
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity) FILTER(WHERE o.created_at>=now()-interval '7 days'),0)::bigint AS current_sales_kobo,
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity) FILTER(WHERE o.created_at>=now()-interval '14 days' AND o.created_at<now()-interval '7 days'),0)::bigint AS previous_sales_kobo,
+      count(DISTINCT o.id) FILTER(WHERE o.created_at>=now()-interval '7 days')::int AS current_orders,
+      count(DISTINCT o.id) FILTER(WHERE o.created_at>=now()-interval '14 days' AND o.created_at<now()-interval '7 days')::int AS previous_orders,
+      COALESCE(sum(oi.quantity) FILTER(WHERE o.created_at>=now()-interval '7 days'),0)::bigint AS current_units,
+      COALESCE(sum(oi.quantity) FILTER(WHERE o.created_at>=now()-interval '14 days' AND o.created_at<now()-interval '7 days'),0)::bigint AS previous_units,
+      date_trunc('week',now())::date AS report_week
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid'`,[seller.id]),
+    db.query(`SELECT oi.product_id,oi.product_name,COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity),0)::bigint AS sales_kobo,
+      COALESCE(sum(oi.quantity),0)::bigint AS units,count(DISTINCT o.id)::int AS orders
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid' AND o.created_at>=now()-interval '7 days'
       GROUP BY oi.product_id,oi.product_name ORDER BY sales_kobo DESC,units DESC LIMIT 5`,[seller.id])
   ]);
+  const weekly=weeklySummary.rows[0]||{};
+  const weeklySales=Number(weekly.current_sales_kobo||0),weeklyOrders=Number(weekly.current_orders||0),weeklyUnits=Number(weekly.current_units||0);
+  const weeklyComparison=Number(weekly.previous_sales_kobo||0)>0?Math.round((weeklySales-Number(weekly.previous_sales_kobo))/Number(weekly.previous_sales_kobo)*100):null;
+  const weeklyMessage='Your last 7 days: ₦'+(weeklySales/100).toLocaleString('en-NG',{maximumFractionDigits:2})+' in paid sales, '+weeklyOrders+' order(s), and '+weeklyUnits+' unit(s). '+(weeklyComparison===null?'No previous-week sales baseline yet.':'Sales '+(weeklyComparison>=0?'increased':'decreased')+' by '+Math.abs(weeklyComparison)+'% compared with the previous 7 days.');
+  await createNotification(db,user.id,{type:'seller_weekly_sales_report',title:'Your weekly sales report',message:weeklyMessage,target_tab:'overview',dedupe_key:'seller-weekly-report:'+seller.id+':'+weekly.report_week,metadata:{seller_id:seller.id,report_week:weekly.report_week,current_sales_kobo:weeklySales,previous_sales_kobo:Number(weekly.previous_sales_kobo||0),current_orders:weeklyOrders,previous_orders:Number(weekly.previous_orders||0),current_units:weeklyUnits,previous_units:Number(weekly.previous_units||0)}});
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
   const lowStock = products.rows.flatMap(p => {
@@ -1056,7 +1076,7 @@ async function sellerDashboard(db, req) {
   return {
     seller: sellerPublic(seller), products: products.rows, low_stock:lowStock, low_stock_threshold:5, orders: orders.rows,
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
-    sales_analytics: {summary:salesSummary.rows[0],daily:dailySales.rows,top_products:topProducts.rows},
+    sales_analytics: {summary:salesSummary.rows[0],daily:dailySales.rows,top_products:topProducts.rows,weekly:{...weekly,comparison_pct:weeklyComparison,top_products:weeklyTopProducts.rows}},
     referral_url: 'https://market.ethandigitalacademy.org/?ref=' + encodeURIComponent(growthProfile.referral_code)
   };
 }
