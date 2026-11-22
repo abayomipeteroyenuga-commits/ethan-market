@@ -869,7 +869,7 @@ async function listProducts(db, params = {}) {
 
 async function productDetail(db, idOrSlug) {
   const { rows } = await db.query(
-    `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.featured,p.created_at,
+    `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.variants,p.featured,p.created_at,
       c.name AS category_name,c.slug AS category_slug,s.id AS seller_id,s.store_name,s.slug AS store_slug,s.description AS store_description,s.city,s.state,
       COALESCE(rv.avg_rating,0) AS rating,COALESCE(rv.review_count,0) AS review_count
      FROM market_products p JOIN market_sellers s ON s.id=p.seller_id LEFT JOIN market_categories c ON c.id=p.category_id

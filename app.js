@@ -132,7 +132,7 @@ function renderProducts() {
       <div class="product-image"><span class="product-badge">${p.product_type === 'digital' ? 'DIGITAL PRODUCT' : p.featured ? 'FEATURED FIND' : html(p.category_name || 'MARKET FIND')}</span>
         <button class="wishlist-button ${state.wishlist.has(p.id) ? 'saved' : ''}" data-wish="${escAttr(p.id)}" aria-label="${state.wishlist.has(p.id) ? 'Remove from' : 'Add to'} wishlist">${state.wishlist.has(p.id) ? '♥' : '♡'}</button>${imageContent(p)}</div>
       <div class="product-info"><span class="product-category">${html(p.category_name || 'Marketplace')}</span><h3><a class="product-title-link" href="/product/${encodeURIComponent(p.slug||'item')}/${encodeURIComponent(p.id)}">${html(p.name)}</a></h3><span class="seller-name">Sold by <a class="store-link" href="/store/${encodeURIComponent(p.store_slug||'')}">${html(p.store_name || 'Ethan seller')}</a></span>
-        <div class="product-bottom"><strong class="product-price">${money(p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
+        <div class="product-bottom"><strong class="product-price">${p.variants?.length?'From ':''}${money(p.variants?.length?Math.min(...p.variants.map(v=>Number(v.price_kobo))):p.price_kobo)} ${p.compare_at_kobo ? `<s>${money(p.compare_at_kobo)}</s>` : ''}</strong><span class="product-rating">${Number(p.rating || 0) ? `<strong>★</strong> ${Number(p.rating).toFixed(1)}` : 'New'}${Number(p.review_count || 0) ? ` (${p.review_count})` : ''}</span></div>
         <div class="product-card-actions"><button class="add-button" data-add="${escAttr(p.id)}" ${p.product_type==='physical'&&Number(p.stock_qty)<1?'disabled':''}>${p.product_type==='physical'&&Number(p.stock_qty)<1?'Out of stock':p.variants?.length?'Choose options':'Add to bag +'}</button><button class="view-button" data-view="${escAttr(p.id)}">View</button></div>
       </div>
     </article>`).join('');
@@ -860,7 +860,7 @@ async function applyCheckoutPromo() {
   if(!code){feedback.textContent='Enter a promo code first.';return;}
   const button=$('#checkout-apply-promo');button.disabled=true;feedback.textContent='Checking promo code…';
   try {
-    const result=await api('checkout.preview',{code,items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),state:$('#checkout-state').value,city:$('#checkout-city').value});
+    const result=await api('checkout.preview',{code,items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity})),state:$('#checkout-state').value,city:$('#checkout-city').value});
     state.promoPreview=result;
     await previewCheckout();
     feedback.textContent=`${result.promo_code||code} applied — you save ${money(result.discount_kobo)}.`;
@@ -871,7 +871,7 @@ async function submitCheckout(e){
   e.preventDefault();$('#checkout-error').textContent='';
   if(!state.config.payments_enabled){$('#checkout-error').textContent='Paystack checkout has not been activated yet. Your cart is saved; please try again later.';return;}
   const button=$('#checkout-form button[type=submit]');button.disabled=true;
-  const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
+  const payload={...growthPayload(),items:state.cart.map(x=>({product_id:x.product_id,variant_id:x.variant_id||'',quantity:x.quantity})),promo_code:$('#checkout-promo').value.trim().toUpperCase(),recipient_name:$('#checkout-recipient').value,phone:$('#checkout-phone').value,address_line1:$('#checkout-address').value,city:$('#checkout-city').value,state:$('#checkout-state').value,postal_code:$('#checkout-postal').value,buyer_note:$('#checkout-note').value};
   try{const result=await api('checkout.create',payload);window.location.href=result.authorization_url;}
   catch(err){$('#checkout-error').textContent=err.message;button.disabled=false;}
 }
