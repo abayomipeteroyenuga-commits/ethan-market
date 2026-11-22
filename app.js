@@ -603,7 +603,7 @@ function openProductEditor(product) {
     $('#product-image').value=product.image_url||'';
     $('#product-description').value=product.description||'';
     $('#digital-url').value=product.digital_delivery_url||'';
-    $('#product-variants').value=(product.variants||[]).map(v=>[v.name,v.sku,Number(v.price_kobo)===Number(product.price_kobo)?'':Number(v.price_kobo)/100,v.stock_qty].join(' | ')).join('\n');
+    $('#product-variants').value=(product.variants||[]).map(v=>[v.name,v.sku,Number(v.price_kobo)===Number(product.price_kobo)?'':Number(v.price_kobo)/100,v.stock_qty,v.id].join(' | ')).join('\n');
   }
   renderProductImagePreview($('#product-image').value);
   updateProductType();
@@ -762,7 +762,7 @@ async function submitProduct(e){
   if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
   if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
   const variantLines=$('#product-variants').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  for(let i=0;i<variantLines.length;i++){const parts=variantLines[i].split('|').map(x=>x.trim());const vPrice=parts[2]?Number(parts[2]):0,vStock=Number(parts[3]);if(parts.length<3||!parts[0]||!Number.isInteger(vStock)||vStock<0||vStock>100000|| (parts[2]&&(!Number.isFinite(vPrice)||vPrice<1))){error.textContent='Check variation line '+(i+1)+'. Use: Option | SKU | Price (optional) | Stock.';return;}variants.push({name:parts[0],sku:parts[1]||'',price_kobo:vPrice?nairaToKobo(vPrice):null,stock_qty:vStock});}
+  for(let i=0;i<variantLines.length;i++){const parts=variantLines[i].split('|').map(x=>x.trim());const vPrice=parts[2]?Number(parts[2]):0,vStock=Number(parts[3]);if(parts.length<3||!parts[0]||!Number.isInteger(vStock)||vStock<0||vStock>100000|| (parts[2]&&(!Number.isFinite(vPrice)||vPrice<1))){error.textContent='Check variation line '+(i+1)+'. Use: Option | SKU | Price (optional) | Stock.';return;}variants.push({name:parts[0],sku:parts[1]||'',price_kobo:vPrice?nairaToKobo(vPrice):null,stock_qty:vStock,id:parts[4]||''});}
   if(variants.length>50){error.textContent='A product can have up to 50 variations.';return;}
   const payload={
     id:$('#product-id').value,name,category_id:categoryId,product_type:type,variants,
