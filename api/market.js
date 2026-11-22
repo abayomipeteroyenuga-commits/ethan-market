@@ -1053,7 +1053,6 @@ async function sellerDashboard(db, req) {
       ? variants.filter(v=>Number(v.stock_qty||0)<=5).map(v=>({product_id:p.id,product_name:p.name,variant_id:v.id,variant_name:v.name,stock_qty:Number(v.stock_qty||0)}))
       : Number(p.stock_qty||0)<=5?[{product_id:p.id,product_name:p.name,variant_id:null,variant_name:'',stock_qty:Number(p.stock_qty||0)}]:[];
   }).sort((a,b)=>a.stock_qty-b.stock_qty);
-  const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
     seller: sellerPublic(seller), products: products.rows, low_stock:lowStock, low_stock_threshold:5, orders: orders.rows,
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
