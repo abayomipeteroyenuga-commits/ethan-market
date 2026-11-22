@@ -8,6 +8,9 @@
     },
     "api/market-webhook.js": {
       "maxDuration": 30
+    },
+    "api/market-weekly-report.js": {
+      "maxDuration": 30
     }
   },
   "headers": [
@@ -175,6 +178,12 @@
     {
       "source": "/register/",
       "destination": "/account.html?mode=register"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/market-weekly-report",
+      "schedule": "0 8 * * 1"
     }
   ]
 }
