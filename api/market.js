@@ -1066,6 +1066,63 @@ async function saveProduct(db, req, body) {
   return { product: rows[0] };
 }
 
+
+async function bulkSaveProducts(db,req,body) {
+  const user=await requireRole(req,db,['seller','admin','super_admin']);
+  const seller=await getSellerByUser(db,user.id,true);
+  const input=Array.isArray(body.products)?body.products:[];
+  if(!input.length||input.length>100) throw new HttpError(400,'Upload between 1 and 100 products per batch.');
+  const prepared=[],skuSeen=new Set(),categoryKeys=[...new Set(input.map(p=>text(p.category_id||p.category,100)).filter(Boolean))];
+  const categoryResult=await db.query('SELECT id,slug,name FROM market_categories WHERE is_active=true AND (id::text=ANY($1::text[]) OR slug=ANY($1::text[]) OR lower(name)=ANY($2::text[]))',[categoryKeys,categoryKeys.map(x=>x.toLowerCase())]);
+  const categories=new Map();
+  for(const c of categoryResult.rows){categories.set(String(c.id),c);categories.set(c.slug.toLowerCase(),c);categories.set(c.name.toLowerCase(),c);}
+  const errors=[];
+  for(let i=0;i<input.length;i++){
+    const row=input[i]||{},rowNumber=Number(row.row_number)||i+2;
+    const name=text(row.name,180),description=text(row.description,1000);
+    const type=row.product_type==='digital'?'digital':'physical';
+    const price=money(row.price_kobo),compare=row.compare_at_kobo?money(row.compare_at_kobo):null;
+    const stock=type==='digital'?999999:parseInt(row.stock_qty,10);
+    const imageUrl=text(row.image_url,1000),digitalUrl=text(row.digital_delivery_url,1500);
+    const sku=text(row.sku,80),categoryKey=text(row.category_id||row.category,100);
+    const category=categories.get(categoryKey)||categories.get(categoryKey.toLowerCase());
+    const rowErrors=[];
+    if(name.length<3)rowErrors.push('Product name must be at least 3 characters.');
+    if(description.length<10)rowErrors.push('Description must be at least 10 characters.');
+    if(!category)rowErrors.push('Choose a valid active category (use the category slug).');
+    if(price<100)rowErrors.push('Selling price must be at least ₦1.');
+    if(compare!==null&&compare<=price)rowErrors.push('Previous price must be higher than selling price.');
+    if(type==='physical'&&(!Number.isInteger(stock)||stock<1||stock>100000))rowErrors.push('Physical stock must be a whole number from 1 to 100,000.');
+    if(imageUrl&&!/^https:\/\//i.test(imageUrl))rowErrors.push('Image URL must use HTTPS.');
+    if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl))rowErrors.push('Digital delivery URL must use HTTPS.');
+    const skuKey=sku.toLowerCase();
+    if(skuKey&&skuSeen.has(skuKey))rowErrors.push('SKU is duplicated within this upload.');
+    if(skuKey)skuSeen.add(skuKey);
+    if(rowErrors.length)errors.push({row:rowNumber,errors:rowErrors});
+    else prepared.push({rowNumber,name,description,type,price,compare,stock,imageUrl,digitalUrl,sku,categoryId:category.id});
+  }
+  if(errors.length)throw new HttpError(400,'Some rows need attention: '+errors.slice(0,5).map(e=>'Row '+e.row+': '+e.errors.join(' ')).join(' '));
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const skuList=prepared.map(p=>p.sku.toLowerCase()).filter(Boolean);
+    if(skuList.length){
+      const duplicate=await client.query("SELECT lower(sku) AS sku FROM market_products WHERE seller_id=$1 AND sku<>'' AND lower(sku)=ANY($2::text[])",[seller.id,skuList]);
+      if(duplicate.rows.length)throw new HttpError(409,'One or more SKUs already exist in your store: '+duplicate.rows.slice(0,5).map(x=>x.sku).join(', '));
+    }
+    const created=[];
+    for(const p of prepared){
+      const slug=slugify(p.name)+'-'+crypto.randomBytes(3).toString('hex');
+      const result=await client.query("INSERT INTO market_products(seller_id,category_id,name,slug,description,product_type,price_kobo,compare_at_kobo,image_url,sku,stock_qty,digital_delivery_url,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty",[seller.id,p.categoryId,p.name,slug,p.description,p.type,p.price,p.compare,p.imageUrl,p.sku,p.stock,p.type==='digital'?p.digitalUrl:'']);
+      created.push(result.rows[0]);
+      await audit(client,user.id,'PRODUCT_BULK_SUBMITTED','product',result.rows[0].id,{batch_size:prepared.length,source_row:p.rowNumber});
+    }
+    await client.query('COMMIT');
+    return {created_count:created.length,products:created,status:'pending'};
+  }catch(error){try{await client.query('ROLLBACK');}catch{}throw error;}
+  finally{client.release();}
+}
+
 async function resolveDeliveryZone(db,state,city) {
   const cleanState=text(state,80).trim().toLowerCase();
   const cleanCity=text(city,80).trim().toLowerCase();
@@ -1959,6 +2016,7 @@ async function handle(db,req,res,body) {
   if(action==='seller.dashboard') return sellerDashboard(db,req);
   if(action==='seller.profile') return saveSellerProfile(db,req,body);
   if(action==='seller.product.save') return saveProduct(db,req,body);
+  if(action==='seller.products.bulk') return bulkSaveProducts(db,req,body);
   if(action==='seller.fulfill') return sellerFulfill(db,req,body);
   if(action==='buyer.orders') return buyerOrders(db,req);
   if(action==='buyer.confirm-delivery') return buyerConfirmDelivery(db,req,body);

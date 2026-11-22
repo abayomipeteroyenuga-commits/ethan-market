@@ -114,3 +114,9 @@
 .seller-sales-bar-track { display:flex; align-items:flex-end; width:100%; height:108px; overflow:hidden; border-radius:6px; background:rgba(100,116,139,.10); }
 .seller-sales-bar { width:100%; min-height:2px; border-radius:6px 6px 2px 2px; background:var(--primary,#173b72); }
 .seller-sales-bar-item small { white-space:nowrap; color:var(--muted,#64748b); font-size:.7rem; }
+
+/* Seller CSV bulk product import */
+.seller-bulk-import .bulk-file-label{display:inline-flex;align-items:center;cursor:pointer}
+.seller-bulk-import #bulk-preview-wrap{margin-top:16px}
+.seller-bulk-import #bulk-preview-rows td{max-width:220px;overflow-wrap:anywhere}
+.seller-bulk-import #bulk-submit-button:disabled{opacity:.45;cursor:not-allowed}

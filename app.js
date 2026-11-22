@@ -545,7 +545,7 @@ function renderSellerTab(tab,data) {
   } else if(tab==='products') {
     const products=data.products||[];
     const counts={active:products.filter(p=>p.status==='active').length,pending:products.filter(p=>p.status==='pending').length,draft:products.filter(p=>p.status==='draft').length,rejected:products.filter(p=>p.status==='rejected').length};
-    el.innerHTML=`<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products</h3><p class="modal-intro">Upload physical goods or digital products. Every new or edited listing enters review before it goes live.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div><div class="metric-grid">${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Drafts',counts.draft)}${renderMetric('Needs attention',counts.rejected)}</div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>${products.map(p=>`<tr><td><div class="seller-product-cell">${p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':''}<strong>${html(p.name)}</strong></div></td><td>${money(p.price_kobo)}</td><td>${html(p.product_type)}</td><td>${p.product_type==='digital'?'—':p.stock_qty}</td><td>${statusPill(p.status)}</td><td><button class="dash-action" data-edit-product="${p.id}">Edit</button></td></tr>`).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6)}</tbody></table></div></div>`;
+    el.innerHTML=`<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products</h3><p class="modal-intro">Upload physical goods or digital products. Every new or edited listing enters review before it goes live.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div><div class="metric-grid">${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Drafts',counts.draft)}${renderMetric('Needs attention',counts.rejected)}</div><div class="dash-panel seller-bulk-import"><h3>Bulk product upload</h3><p class="modal-intro">Import up to 100 physical or digital products from a CSV spreadsheet. Download the template, fill it in, choose the file and preview your rows before submitting. All imported products enter admin review.</p><div class="dash-actions"><button type="button" class="dash-action" id="bulk-template-download">Download CSV template</button><label class="dash-action primary bulk-file-label" for="bulk-product-file">Choose CSV file</label><input id="bulk-product-file" type="file" accept=".csv,text/csv" hidden></div><p class="upload-state" id="bulk-upload-status" aria-live="polite">CSV only · Maximum 100 products per upload.</p><div id="bulk-preview-wrap" hidden><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Row</th><th>Product</th><th>Category</th><th>Type</th><th>Price</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div><div class="dash-actions"><button type="button" class="button button-primary" id="bulk-submit-button" disabled>Submit valid products for review</button><button type="button" class="dash-action" id="bulk-clear-button">Clear file</button></div></div></div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>${products.map(p=>`<tr><td><div class="seller-product-cell">${p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':''}<strong>${html(p.name)}</strong></div></td><td>${money(p.price_kobo)}</td><td>${html(p.product_type)}</td><td>${p.product_type==='digital'?'—':p.stock_qty}</td><td>${statusPill(p.status)}</td><td><button class="dash-action" data-edit-product="${p.id}">Edit</button></td></tr>`).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6)}</tbody></table></div></div>`;
   } else if(tab==='orders') {
     el.innerHTML=`<div class="dash-panel"><h3>Customer orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Customer</th><th>Quantity</th><th>Delivery</th><th>Update</th></tr></thead><tbody>${(data.orders||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong><br>${html(o.product_name)}<br><small>${formatDate(o.created_at)}</small></td><td>${html(o.recipient_name)}<br>${html(o.phone)}<br><small>${html([o.shipping_address?.line1,o.shipping_address?.city,o.shipping_address?.state].filter(Boolean).join(', '))}</small></td><td>${o.quantity}</td><td>${statusPill(o.fulfillment_status)}${o.tracking_number?`<br><small>${html(o.tracking_carrier)} ${html(o.tracking_number)}</small>`:''}</td><td><div class="dash-actions"><button class="dash-action" data-fulfill="${o.id}" data-status="processing">Processing</button><button class="dash-action primary" data-fulfill="${o.id}" data-status="dispatched">Dispatch / add tracking</button></div><small>Buyer confirms receipt in their order history.</small></td></tr>`).join('')||tableEmpty('No paid orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='disputes') {
@@ -660,6 +660,84 @@ async function uploadProductImage(e){
   }finally{
     button.disabled=false;
   }
+}
+
+let bulkImportRows=[];
+function parseMarketCsv(source){
+  const rows=[];let row=[],cell='',quoted=false;
+  for(let i=0;i<source.length;i++){
+    const ch=source[i],next=source[i+1];
+    if(quoted){if(ch==='"'&&next==='"'){cell+='"';i++;}else if(ch==='"')quoted=false;else cell+=ch;}
+    else if(ch==='"')quoted=true;
+    else if(ch===','){row.push(cell);cell='';}
+    else if(ch==='\n'){row.push(cell);rows.push(row);row=[];cell='';}
+    else if(ch!=='\r')cell+=ch;
+  }
+  if(quoted)throw new Error('The CSV file has an unclosed quotation mark.');
+  if(cell.length||row.length){row.push(cell);rows.push(row);}
+  return rows.filter(r=>r.some(v=>String(v).trim()!==''));
+}
+function downloadBulkTemplate(){
+  const headers=['name','category','product_type','price','compare_at_price','stock_qty','sku','image_url','description','digital_delivery_url'];
+  const category=state.categories?.[0]?.slug||'category-slug';
+  const sample=['Sample product',category,'physical','5000','6500','10','SKU-001','','Describe your product in at least 10 characters',''];
+  const csv=[headers,sample].map(r=>r.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  const link=document.createElement('a');link.href=url;link.download='ethan-market-product-upload-template.csv';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+}
+function validateBulkFile(source){
+  const parsed=parseMarketCsv(source);
+  if(parsed.length<2)throw new Error('The CSV must contain a header row and at least one product.');
+  const headers=parsed[0].map(x=>String(x).trim().toLowerCase());
+  const required=['name','category','product_type','price','stock_qty','description'];
+  const missing=required.filter(x=>!headers.includes(x));
+  if(missing.length)throw new Error('Missing required columns: '+missing.join(', '));
+  const allowed=['name','category','product_type','price','compare_at_price','stock_qty','sku','image_url','description','digital_delivery_url'];
+  const index={};headers.forEach((h,i)=>{if(allowed.includes(h))index[h]=i;});
+  const raw=parsed.slice(1);
+  if(raw.length>100)throw new Error('Maximum 100 products per upload. Split larger catalogues into separate files.');
+  const seen=new Set();
+  return raw.map((values,i)=>{
+    const get=k=>String(values[index[k]]??'').trim();
+    const row={row_number:i+2,name:get('name'),category:get('category'),product_type:get('product_type').toLowerCase()==='digital'?'digital':'physical',price:get('price'),compare_at_price:get('compare_at_price'),stock_qty:get('stock_qty'),sku:get('sku'),image_url:get('image_url'),description:get('description'),digital_delivery_url:get('digital_delivery_url'),errors:[]};
+    if(row.name.length<3)row.errors.push('Name is too short');
+    const category=state.categories.find(c=>c.slug?.toLowerCase()===row.category.toLowerCase()||c.name?.toLowerCase()===row.category.toLowerCase());
+    if(!category)row.errors.push('Unknown category');else row.category_id=category.id;
+    const price=Number(row.price),compare=row.compare_at_price===''?0:Number(row.compare_at_price);
+    if(!Number.isFinite(price)||price<1||!Number.isSafeInteger(Math.round(price*100)))row.errors.push('Invalid price');
+    if(compare>0&&compare<=price)row.errors.push('Previous price must exceed price');
+    if(row.product_type==='physical'&&(!/^\d+$/.test(row.stock_qty)||Number(row.stock_qty)<1||Number(row.stock_qty)>100000))row.errors.push('Invalid stock');
+    if(row.description.length<10)row.errors.push('Description needs 10+ characters');
+    if(row.image_url&&!/^https:\/\//i.test(row.image_url))row.errors.push('Image URL must use HTTPS');
+    if(row.product_type==='digital'&&row.digital_delivery_url&&!/^https:\/\//i.test(row.digital_delivery_url))row.errors.push('Digital URL must use HTTPS');
+    const sku=row.sku.toLowerCase();if(sku&&seen.has(sku))row.errors.push('Duplicate SKU in file');if(sku)seen.add(sku);
+    row.price_kobo=Math.round(price*100);row.compare_at_kobo=compare?Math.round(compare*100):null;
+    return row;
+  });
+}
+function renderBulkPreview(){
+  const wrap=$('#bulk-preview-wrap'),body=$('#bulk-preview-rows'),button=$('#bulk-submit-button');
+  if(!wrap||!body||!button)return;
+  wrap.hidden=!bulkImportRows.length;
+  body.innerHTML=bulkImportRows.map(r=>'<tr><td>'+r.row_number+'</td><td><strong>'+html(r.name||'—')+'</strong></td><td>'+html(r.category||'—')+'</td><td>'+html(r.product_type)+'</td><td>'+(r.price_kobo?money(r.price_kobo):'—')+'</td><td>'+(r.errors.length?'<span class="status-pill rejected">'+html(r.errors.join('; '))+'</span>':'<span class="status-pill approved">Ready</span>')+'</td></tr>').join('');
+  const valid=bulkImportRows.filter(r=>!r.errors.length).length,invalid=bulkImportRows.length-valid;
+  button.disabled=valid===0;button.textContent='Submit '+valid+' valid products for review';
+  $('#bulk-upload-status').textContent=bulkImportRows.length+' rows found · '+valid+' ready · '+invalid+' need correction. Invalid rows will not be imported.';
+}
+async function loadBulkCsv(file){
+  const status=$('#bulk-upload-status');status.textContent='Reading CSV…';
+  if(!file||file.size>200*1024){status.textContent='Choose a CSV file smaller than 200 KB.';return;}
+  try{bulkImportRows=validateBulkFile(await file.text());renderBulkPreview();}
+  catch(error){bulkImportRows=[];$('#bulk-preview-wrap').hidden=true;status.textContent=error.message;}
+}
+async function submitBulkProducts(){
+  const valid=bulkImportRows.filter(r=>!r.errors.length);if(!valid.length)return;
+  const button=$('#bulk-submit-button');button.disabled=true;button.textContent='Submitting products…';
+  try{
+    const result=await api('seller.products.bulk',{products:valid.map(r=>({row_number:r.row_number,name:r.name,category_id:r.category_id,product_type:r.product_type,price_kobo:r.price_kobo,compare_at_kobo:r.compare_at_kobo,stock_qty:r.stock_qty,sku:r.sku,image_url:r.image_url,description:r.description,digital_delivery_url:r.digital_delivery_url}))});
+    notify(result.created_count+' products submitted. They will appear in your store after admin approval.');
+    bulkImportRows=[];$('#bulk-product-file').value='';$('#bulk-preview-wrap').hidden=true;await loadDashboardTab();
+  }catch(error){$('#bulk-upload-status').textContent=error.message||'Bulk upload failed. Please correct the file and try again.';button.disabled=false;renderBulkPreview();}
 }
 async function submitProduct(e){
   e.preventDefault();
@@ -950,6 +1028,12 @@ $('#auth-form').addEventListener('submit',submitAuth);
 $('#auth-email').addEventListener('input',updateOwnerTokenVisibility);
 $('#seller-form').addEventListener('submit',submitSellerApplication);
 $('#product-form').addEventListener('submit',submitProduct);
+$('#dashboard-content').addEventListener('change',e=>{if(e.target.id==='bulk-product-file')loadBulkCsv(e.target.files?.[0]);});
+$('#dashboard-content').addEventListener('click',e=>{
+  if(e.target.closest('#bulk-template-download')){downloadBulkTemplate();return;}
+  if(e.target.closest('#bulk-submit-button')){submitBulkProducts();return;}
+  if(e.target.closest('#bulk-clear-button')){bulkImportRows=[];$('#bulk-product-file').value='';$('#bulk-preview-wrap').hidden=true;$('#bulk-upload-status').textContent='CSV only · Maximum 100 products per upload.';}
+});
 $('#product-type').addEventListener('change',updateProductType);
 $('#product-image-file').addEventListener('change',uploadProductImage);
 $('#product-image').addEventListener('input',e=>renderProductImagePreview(e.target.value));
