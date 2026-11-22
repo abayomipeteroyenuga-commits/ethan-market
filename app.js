@@ -1041,8 +1041,8 @@ $('#dashboard-content').addEventListener('click',e=>{
   if(e.target.closest('#weekly-report-download')){
     const report=state.sellerData?.sales_analytics?.weekly||{};
     const rows=[['ETHAN MARKET Weekly Seller Report'],['Store',state.sellerData?.seller?.store_name||''],['Period','Last 7 days'],['Metric','Last 7 days','Previous 7 days'],['Paid sales (NGN)',Number(report.current_sales_kobo||0)/100,Number(report.previous_sales_kobo||0)/100],['Paid orders',Number(report.current_orders||0),Number(report.previous_orders||0)],['Units sold',Number(report.current_units||0),Number(report.previous_units||0)],[],['Top products this week','Units sold','Orders','Sales (NGN)'],...(report.top_products||[]).map(p=>[p.product_name,Number(p.units||0),Number(p.orders||0),Number(p.sales_kobo||0)/100])];
-    const csv=rows.map(row=>row.map(value=>'\"'+String(value??'').replace(/\"/g,'\"\"')+'\"').join(',')).join('\\r\\n');
-    const blob=new Blob(['\\uFEFF',csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),link=document.createElement('a');
+    const csv=rows.map(row=>row.map(value=>'\"'+String(value??'').replace(/\"/g,'\"\"')+'\"').join(',')).join('\r\n');
+    const blob=new Blob(['\uFEFF',csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),link=document.createElement('a');
     link.href=url;link.download='ethan-market-weekly-sales-report.csv';document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);return;
   }
   if(e.target.closest('#bulk-template-download')){downloadBulkTemplate();return;}
