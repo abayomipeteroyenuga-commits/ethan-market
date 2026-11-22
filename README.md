@@ -25,7 +25,7 @@ ETHAN MARKET is a multi-vendor marketplace for physical and digital products, po
 
 ## Revenue model
 
-The marketplace's configured seller commission is the primary current platform revenue stream. The default is 10% (1,000 basis points) of the product subtotal and can be changed by an administrator. Delivery charges are separate from the commission and should not automatically be reported as profit. Additional monetisation such as paid featured listings or seller subscriptions is a future option, not part of the current live revenue model.
+The marketplace's configured seller commission is the primary current platform revenue stream. The current standard seller commission is 5% (500 basis points) of each seller's product subtotal. Paystack processing fees are paid by ETHAN MARKET and recorded separately from seller settlement. Physical delivery is destination-zone priced using administrator-managed location rates; the nationwide fallback is currently ₦2,000 until more specific city/state zones are configured. Delivery charges are separate from marketplace commission and must not be reported as platform profit. Additional monetisation such as paid featured listings or seller subscriptions is a future option, not part of the current live revenue model.
 
 ### Features
 
@@ -57,7 +57,7 @@ The marketplace's configured seller commission is the primary current platform r
 - Seller approval/rejection/suspension
 - Product approval/rejection/feature controls
 - Order status monitoring
-- Commission and delivery-fee settings
+- Commission, delivery-zone and delivery-fee settings
 - Seller settlement ledger with account details and transfer reference
 - Dispute queue and conditional seller-payout approval
 
@@ -152,6 +152,8 @@ The schema is initialized by the first successful API request using `CREATE TABL
 
 - No real products are pre-seeded. Sellers create listings and administrators approve them before publication.
 - New products are `pending` until reviewed.
-- Default marketplace commission is 10%; default physical delivery is ₦2,000. Both values are adjustable by the marketplace administrator.
+- Standard marketplace commission is 5%; existing seller records are aligned to 5% while historical order-item commission and payout snapshots remain unchanged.
+- Payment processing is absorbed by ETHAN MARKET. The verified Paystack fee is stored per payment when Paystack returns its fee amount.
+- Delivery pricing uses exact city/state overrides, then state-wide zones, then the nationwide fallback (currently ₦2,000). Administrators can add, edit and pause delivery zones from Marketplace Settings. The zone prices are manually maintained estimates; no courier API quote or live tracking integration is implied.
 - Digital products currently use seller-provided HTTPS delivery links, which are displayed in a buyer's account only after payment is verified. Use a secure, access-controlled digital delivery destination.
 - This is an operational software foundation, not a substitute for the marketplace's final legal terms, privacy notice, returns/refunds policy, seller agreement or Nigerian tax/compliance review.

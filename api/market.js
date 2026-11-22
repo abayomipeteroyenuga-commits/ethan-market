@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { Pool } = require('pg');
+const { calculateCommissionKobo, calculateCheckoutBreakdown } = require('../lib/commercial');
 
 // One-time bootstrap code is checked by its SHA-256 digest, never stored in plaintext.
 const OWNER_SETUP_HASH = Buffer.from([
@@ -82,7 +83,7 @@ const schema = [
     whatsapp text NOT NULL DEFAULT '', business_type text NOT NULL DEFAULT 'individual', city text NOT NULL DEFAULT '',
     state text NOT NULL DEFAULT '', seller_status text NOT NULL DEFAULT 'pending' CHECK (seller_status IN ('pending','approved','rejected','suspended')),
     bank_name text NOT NULL DEFAULT '', bank_code text NOT NULL DEFAULT '', account_number text NOT NULL DEFAULT '',
-    account_name text NOT NULL DEFAULT '', commission_bps int NOT NULL DEFAULT 1000 CHECK (commission_bps BETWEEN 0 AND 5000),
+    account_name text NOT NULL DEFAULT '', commission_bps int NOT NULL DEFAULT 500 CHECK (commission_bps BETWEEN 0 AND 5000),
     paystack_subaccount_code text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS market_products (
@@ -281,6 +282,16 @@ const schema = [
   `CREATE TABLE IF NOT EXISTS market_settings (
     key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS market_delivery_zones (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL,
+    state text NOT NULL DEFAULT '*', city text NOT NULL DEFAULT '*',
+    fee_kobo bigint NOT NULL CHECK (fee_kobo >= 0), active boolean NOT NULL DEFAULT true,
+    is_fallback boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS market_delivery_zones_match_uq ON market_delivery_zones(lower(state),lower(city))`,
+  `ALTER TABLE market_payments ADD COLUMN IF NOT EXISTS gateway_fee_kobo bigint NOT NULL DEFAULT 0`,
+  `ALTER TABLE market_payments ADD COLUMN IF NOT EXISTS gateway_fee_recorded_at timestamptz`,
   `CREATE TABLE IF NOT EXISTS market_audit_logs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), actor_id uuid REFERENCES market_users(id),
     action text NOT NULL, entity_type text NOT NULL DEFAULT '', entity_id text NOT NULL DEFAULT '',
@@ -297,9 +308,13 @@ const schema = [
     ('Business & Office','business-office','▧',8),('Sports & Outdoors','sports-outdoors','◎',9)
     ON CONFLICT(slug) DO NOTHING`,
   `INSERT INTO market_settings(key,value) VALUES
-    ('commission_bps','1000'::jsonb),('physical_shipping_kobo','200000'::jsonb),('marketplace_name','"ETHAN MARKET"'::jsonb),
-    ('support_email','"ethandigitalacademy@gmail.com"'::jsonb),('seller_payout_hold_days','7'::jsonb)
-    ON CONFLICT(key) DO NOTHING`
+    ('commission_bps','500'::jsonb),('physical_shipping_kobo','200000'::jsonb),('marketplace_name','"ETHAN MARKET"'::jsonb),
+    ('support_email','"ethandigitalacademy@gmail.com"'::jsonb),('seller_payout_hold_days','7'::jsonb),
+    ('payment_processing_bearer','"ethan"'::jsonb),('delivery_pricing_mode','"zone"'::jsonb)
+    ON CONFLICT(key) DO NOTHING`,
+  `INSERT INTO market_delivery_zones(name,state,city,fee_kobo,active,is_fallback)
+    VALUES('Nationwide default','*','*',200000,true,true)
+    ON CONFLICT(lower(state),lower(city)) DO NOTHING`
 ];
 
 async function ensureSchema() {
@@ -312,7 +327,7 @@ async function ensureSchema() {
       'market_users','market_sessions','market_categories','market_sellers',
       'market_products','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
-      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events'
+      'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events','market_delivery_zones'
     ];
     const countTables = async (executor) => {
       const result = await executor.query(
@@ -637,6 +652,38 @@ async function growthTrack(db,req,body) {
   return {ok:true};
 }
 
+async function checkoutPreview(db,req,body) {
+  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
+  await rateLimit(db,'checkout-preview',user.id,30,15);
+  const items=Array.isArray(body.items)?body.items:[];
+  if(!items.length||items.length>30) throw new HttpError(400,'Your cart is empty or invalid.');
+  const ids=[...new Set(items.map(x=>text(x.product_id,80)).filter(x=>/^[0-9a-f-]{36}$/i.test(x)))];
+  if(!ids.length) throw new HttpError(400,'Your basket is not valid.');
+  const {rows}=await db.query(
+    `SELECT p.id,p.price_kobo,p.product_type,s.commission_bps FROM market_products p
+     JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved'`,[ids]
+  );
+  if(rows.length!==ids.length) throw new HttpError(409,'One or more products are no longer available.');
+  let subtotal=0,physical=false,commission=0;
+  for(const product of rows) {
+    const quantity=items.filter(x=>x.product_id===product.id).reduce((n,x)=>n+Math.min(20,Math.max(1,parseInt(x.quantity,10)||1)),0);
+    const gross=Number(product.price_kobo)*quantity;
+    subtotal+=gross;
+    commission+=calculateCommissionKobo(gross,Number(product.commission_bps));
+    if(product.product_type==='physical') physical=true;
+  }
+  const zone=physical?await resolveDeliveryZone(db,body.state||'',body.city||''):null;
+  const shipping=zone?zone.fee_kobo:0;
+  const promoCode=text(body.code||body.promo_code,40).toUpperCase();
+  const promo=promoCode?await resolvePromo(db,user,promoCode,subtotal,commission,false):null;
+  const discount=promo?promo.discount_kobo:0;
+  const breakdown=calculateCheckoutBreakdown({subtotalKobo:subtotal,deliveryKobo:shipping,discountKobo:discount});
+  return {subtotal_kobo:breakdown.subtotalKobo,shipping_kobo:breakdown.deliveryKobo,discount_kobo:breakdown.discountKobo,
+    total_kobo:breakdown.totalKobo,delivery_zone_name:zone?.name||'Digital products',
+    delivery_location_label:[text(body.city,80),text(body.state,80)].filter(Boolean).join(', '),
+    payment_processing_fee_kobo:0,payment_processing_bearer:'ETHAN MARKET',promo_code:promo?.code||''};
+}
+
 async function growthPromoPreview(db,req,body) {
   const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
   await rateLimit(db,'promo-preview',user.id,20,15);
@@ -653,12 +700,15 @@ async function growthPromoPreview(db,req,body) {
   for(const product of rows) {
     const q=items.filter(x=>x.product_id===product.id).reduce((n,x)=>n+Math.min(20,Math.max(1,parseInt(x.quantity,10)||1)),0);
     subtotal+=Number(product.price_kobo)*q;
-    fee+=Math.round(Number(product.price_kobo)*q*Number(product.commission_bps)/10000);
+    fee+=calculateCommissionKobo(Number(product.price_kobo)*q,Number(product.commission_bps));
     if(product.product_type==='physical') physical=true;
   }
   const promo=await resolvePromo(db,user,text(body.code,40).toUpperCase(),subtotal,fee,false);
-  const settings=await getSettings(db);
-  return {code:promo.code,discount_kobo:promo.discount_kobo,subtotal_kobo:subtotal,estimated_total_kobo:Math.max(0,subtotal+(physical?Number(settings.physical_shipping_kobo??200000):0)-promo.discount_kobo)};
+  const deliveryZone=physical?await resolveDeliveryZone(db,body.state,body.city):null;
+  const shipping=deliveryZone?deliveryZone.fee_kobo:0;
+  const breakdown=calculateCheckoutBreakdown({subtotalKobo:subtotal,deliveryKobo:shipping,discountKobo:promo.discount_kobo});
+  return {code:promo.code,discount_kobo:promo.discount_kobo,subtotal_kobo:subtotal,shipping_kobo:shipping,
+    delivery_zone_name:deliveryZone?.name||'Digital products',estimated_total_kobo:breakdown.totalKobo};
 }
 
 async function adminGrowthOverview(db,req) {
@@ -993,6 +1043,20 @@ async function saveProduct(db, req, body) {
   return { product: rows[0] };
 }
 
+async function resolveDeliveryZone(db,state,city) {
+  const cleanState=text(state,80).trim().toLowerCase();
+  const cleanCity=text(city,80).trim().toLowerCase();
+  const {rows}=await db.query(
+    `SELECT id,name,state,city,fee_kobo FROM market_delivery_zones
+     WHERE active=true AND (lower(state)=$1 OR state='*')
+       AND (lower(city)=$2 OR city='*')
+     ORDER BY CASE WHEN state<>'*' THEN 0 ELSE 1 END,
+       CASE WHEN city<>'*' THEN 0 ELSE 1 END LIMIT 1`,[cleanState,cleanCity]
+  );
+  if(!rows.length) throw new HttpError(409,'Delivery pricing is not configured for this location yet. Please contact ETHAN MARKET support.');
+  return {...rows[0],fee_kobo:Number(rows[0].fee_kobo)};
+}
+
 async function checkout(db, req, body) {
   if (!process.env.PAYSTACK_SECRET_KEY) throw new HttpError(503,'Secure checkout is being connected. Marketplace browsing and seller registration are available, but payment is not enabled yet.');
   const user = await requireRole(req, db, ['buyer','seller','admin','super_admin']);
@@ -1040,13 +1104,13 @@ async function checkout(db, req, body) {
       }
       subtotal += Number(p.price_kobo) * quantity;
       if (p.product_type === 'physical') physical = true;
-      const commission = Math.round(Number(p.price_kobo) * quantity * Number(p.commission_bps) / 10000);
+      const commission = calculateCommissionKobo(Number(p.price_kobo)*quantity,Number(p.commission_bps));
       marketplaceFee+=commission;
       itemSnapshots.push({p,quantity,commission,net:Number(p.price_kobo)*quantity-commission});
     }
     if (!Number.isSafeInteger(subtotal) || subtotal < 100) throw new HttpError(400,'The cart total is invalid.');
-    const settings = await getSettings(dbClient);
-    const shipping = physical ? money(settings.physical_shipping_kobo ?? 200000) : 0;
+    const deliveryZone = physical ? await resolveDeliveryZone(dbClient,body.state,body.city) : null;
+    const shipping = physical ? deliveryZone.fee_kobo : 0;
     const promoCode=text(body.promo_code,40).toUpperCase();
     const promo=promoCode?await resolvePromo(dbClient,user,promoCode,subtotal,marketplaceFee,true):null;
     const discount=promo?promo.discount_kobo:0;
@@ -1058,12 +1122,15 @@ async function checkout(db, req, body) {
     );
     const affiliateUser=attribution.rows[0]?.affiliate_status==='approved'?attribution.rows[0].referrer_user_id:null;
     const campaignSlug=text(body.campaign_slug,100)||growthProfile.first_campaign_slug||'';
-    const total = subtotal + shipping - discount;
+    const checkoutBreakdown=calculateCheckoutBreakdown({subtotalKobo:subtotal,deliveryKobo:shipping,discountKobo:discount});
+    const total = checkoutBreakdown.totalKobo;
     const recipient = text(body.recipient_name || user.full_name,120);
     const phone = text(body.phone || user.phone,40);
     const address = {
       line1:text(body.address_line1,180),line2:text(body.address_line2,180),city:text(body.city,80),
-      state:text(body.state,80),postal_code:text(body.postal_code,30),country:'Nigeria'
+      state:text(body.state,80),postal_code:text(body.postal_code,30),country:'Nigeria',
+      delivery_zone_id:deliveryZone?.id||null,delivery_zone_name:deliveryZone?.name||'',
+      delivery_fee_kobo:shipping,delivery_pricing_mode:physical?'zone':'none'
     };
     if (physical && (!recipient || !phone || !address.line1 || !address.city || !address.state)) throw new HttpError(400,'Complete the delivery name, phone, street, city and state for physical items.');
     await dbClient.query(
@@ -1133,6 +1200,11 @@ async function finalizePaid(db, transaction) {
     if (!rows.length) throw new HttpError(404,'No ETHAN MARKET order matches this payment reference.');
     const order = rows[0];
     if (Number(transaction.amount) !== Number(order.total_kobo) || String(transaction.currency).toUpperCase() !== 'NGN') throw new HttpError(400,'The payment amount or currency does not match this order.');
+    const providerFee=Math.max(0,Number(transaction.fees)||0);
+    if(providerFee>0) await client.query(
+      "UPDATE market_payments SET gateway_fee_kobo=$2,gateway_fee_recorded_at=now() WHERE reference=$1 AND gateway_fee_kobo=0",
+      [String(transaction.reference),providerFee]
+    );
     if (order.payment_status !== 'paid') {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
@@ -1578,15 +1650,18 @@ async function adminResolveDispute(db,req,body) {
 
 async function adminOverview(db,req) {
   const user=await requireRole(req,db,['admin','super_admin']);
-  const [orders,products,sellers,payouts,recent]=await Promise.all([
+  const [orders,products,sellers,payouts,recent,finance]=await Promise.all([
     db.query(`SELECT count(*) AS count,COALESCE(sum(total_kobo) FILTER(WHERE payment_status='paid'),0) AS gmv,
       count(*) FILTER(WHERE payment_status='paid') AS paid_orders,count(*) FILTER(WHERE payment_status='pending') AS awaiting_payment FROM market_orders`),
     db.query("SELECT count(*) AS total,count(*) FILTER(WHERE status='active') AS active,count(*) FILTER(WHERE status='pending') AS pending FROM market_products"),
     db.query("SELECT count(*) AS total,count(*) FILTER(WHERE seller_status='approved') AS approved,count(*) FILTER(WHERE seller_status='pending') AS pending FROM market_sellers"),
     db.query("SELECT count(*) AS count,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding FROM market_payouts"),
-    db.query(`SELECT o.id,o.order_number,o.buyer_email,o.total_kobo,o.payment_status,o.status,o.created_at FROM market_orders o ORDER BY o.created_at DESC LIMIT 8`)
+    db.query(`SELECT o.id,o.order_number,o.buyer_email,o.total_kobo,o.payment_status,o.status,o.created_at FROM market_orders o ORDER BY o.created_at DESC LIMIT 8`),
+    db.query(`SELECT
+      COALESCE((SELECT sum(oi.commission_kobo) FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE o.payment_status='paid'),0)::bigint AS marketplace_commission_kobo,
+      COALESCE((SELECT sum(p.gateway_fee_kobo) FROM market_payments p JOIN market_orders o ON o.id=p.order_id WHERE o.payment_status='paid'),0)::bigint AS gateway_fee_kobo`)
   ]);
-  return {orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows};
+  return {orders:orders.rows[0],products:products.rows[0],sellers:sellers.rows[0],payouts:payouts.rows[0],recent:recent.rows,finance:finance.rows[0]};
 }
 
 async function adminList(db,req,kind) {
@@ -1619,7 +1694,13 @@ async function adminList(db,req,kind) {
     return {disputes:rows};
   }
   if(kind==='growth') return adminGrowthOverview(db,req);
-  if(kind==='settings') return {settings:await getSettings(db)};
+  if(kind==='settings') {
+    const [settings,zones]=await Promise.all([
+      getSettings(db),
+      db.query(`SELECT id,name,state,city,fee_kobo,active,is_fallback FROM market_delivery_zones ORDER BY is_fallback DESC,state,city,name`)
+    ]);
+    return {settings,delivery_zones:zones.rows};
+  }
   throw new HttpError(400,'Unknown administration list.');
 }
 
@@ -1786,11 +1867,33 @@ async function adminAction(db,req,body) {
   }
   if(action==='admin.confirm-delivery') return adminConfirmDelivery(db,req,body);
   if(action==='admin.dispute-resolve') return adminResolveDispute(db,req,body);
+  if(action==='admin.delivery-zone-save') {
+    const zoneId=text(body.id,80),name=text(body.name,100).trim();
+    const state=text(body.state,80).trim()||'*',city=text(body.city,80).trim()||'*',fee=money(body.fee_kobo);
+    if(name.length<3||(!/^[a-z0-9 -]{1,80}$/i.test(state)&&state!=='*')||(!/^[a-z0-9 -]{1,80}$/i.test(city)&&city!=='*'))
+      throw new HttpError(400,'Enter a valid zone name, state/city (or * for any), and delivery fee.');
+    if(zoneId) {
+      const updated=await db.query(`UPDATE market_delivery_zones SET name=$2,state=$3,city=$4,fee_kobo=$5,updated_at=now() WHERE id=$1 RETURNING id`,[zoneId,name,state,city,fee]);
+      if(!updated.rows.length) throw new HttpError(404,'Delivery zone not found.');
+    } else {
+      try { await db.query(`INSERT INTO market_delivery_zones(name,state,city,fee_kobo,is_fallback) VALUES($1,$2,$3,$4,$5)`,[name,state,city,fee,state==='*'&&city==='*']); }
+      catch(error) { if(error.code==='23505') throw new HttpError(409,'A delivery zone already exists for that state and city. Edit the existing zone instead.'); throw error; }
+    }
+    await audit(db,user.id,'DELIVERY_ZONE_SAVED','delivery_zone',zoneId||name,{state,city,fee_kobo:fee});
+    const zones=await db.query(`SELECT id,name,state,city,fee_kobo,active,is_fallback FROM market_delivery_zones ORDER BY is_fallback DESC,state,city,name`);
+    return {ok:true,delivery_zones:zones.rows};
+  }
+  if(action==='admin.delivery-zone-status') {
+    const active=body.active===true;
+    const updated=await db.query(`UPDATE market_delivery_zones SET active=$2,updated_at=now() WHERE id=$1 AND is_fallback=false RETURNING id`,[id,active]);
+    if(!updated.rows.length) throw new HttpError(400,'The nationwide fallback zone cannot be deactivated.');
+    await audit(db,user.id,'DELIVERY_ZONE_STATUS_CHANGED','delivery_zone',id,{active});
+    return {ok:true};
+  }
   if(action==='admin.settings') {
     const commission=Math.min(Math.max(parseInt(body.commission_bps,10)||0,0),5000);
-    const shipping=money(body.physical_shipping_kobo);
     const holdDays=Math.min(30,Math.max(1,parseInt(body.seller_payout_hold_days,10)||7));
-    await db.query("INSERT INTO market_settings(key,value) VALUES('commission_bps',$1::jsonb),('physical_shipping_kobo',$2::jsonb),('seller_payout_hold_days',$3::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()",[JSON.stringify(commission),JSON.stringify(shipping),JSON.stringify(holdDays)]);
+    await db.query("INSERT INTO market_settings(key,value) VALUES('commission_bps',$1::jsonb),('seller_payout_hold_days',$2::jsonb),('payment_processing_bearer','\"ethan\"'::jsonb),('delivery_pricing_mode','\"zone\"'::jsonb) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=now()",[JSON.stringify(commission),JSON.stringify(holdDays)]);
     await db.query('UPDATE market_sellers SET commission_bps=$1,updated_at=now()', [commission]);
     await audit(db,user.id,'MARKET_SETTINGS_UPDATED','settings','market'); return {settings:await getSettings(db)};
   }
@@ -1820,7 +1923,7 @@ async function storeDetails(db, slug) {
 async function handle(db,req,res,body) {
   const action=text(body.action,80);
   if(action==='health') return {status:'ok',service:'ETHAN MARKET',database:'connected',payments:!!process.env.PAYSTACK_SECRET_KEY};
-  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 1000), seller_payout_hold_days:Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7)), payments_enabled:!!process.env.PAYSTACK_SECRET_KEY, support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
+  if(action==='market.config') { const settings=await getSettings(db); return { marketplace_name:'ETHAN MARKET', shipping_kobo:Number(settings.physical_shipping_kobo ?? 200000), commission_bps:Number(settings.commission_bps ?? 500), delivery_pricing_mode:'zone', payment_processing_bearer:'ethan', seller_payout_hold_days:Math.min(30,Math.max(1,Number(settings.seller_payout_hold_days)||7)), payments_enabled:!!process.env.PAYSTACK_SECRET_KEY, support_email:String(settings.support_email || 'ethandigitalacademy@gmail.com') }; }
   if(action==='auth.register') return authRegister(db,req,res,body);
   if(action==='auth.login') return authLogin(db,req,res,body);
   if(action==='auth.me') return authMe(db,req);
@@ -1847,6 +1950,7 @@ async function handle(db,req,res,body) {
   if(action==='wishlist.list') return wishlist(db,req);
   if(action==='wishlist.toggle') return toggleWishlist(db,req,body);
   if(action==='reviews.create') return addReview(db,req,body);
+  if(action==='checkout.preview') return checkoutPreview(db,req,body);
   if(action==='checkout.create') return checkout(db,req,body);
   if(action==='payment.verify') return verifyPayment(db,req,body);
   if(action==='admin.overview') return adminOverview(db,req);

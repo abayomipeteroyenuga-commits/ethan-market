@@ -3,7 +3,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const state = {
-  user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, payments_enabled: false },
+  user: null, seller: null, categories: [], products: [], config: { shipping_kobo: 200000, commission_bps: 500, delivery_pricing_mode: 'zone', payments_enabled: false },
   category: 'all', filter: 'all', query: '', sort: 'featured', cart: readCart(), wishlist: new Set(),
   authMode: 'login', dashboardTab: 'overview', sellerData: null, adminData: {}, currentProduct: null, toastTimer: null,
   unreadNotifications: 0, notificationTimer: null, notificationTopId: null, promoPreview: null
@@ -253,11 +253,13 @@ function openCheckout() {
   $('#checkout-recipient').value = state.user.full_name || '';
   $('#checkout-phone').value = state.user.phone || '';
   $('#checkout-total').textContent = money(cartTotal());
+  $('#checkout-breakdown').innerHTML='<small>Enter your delivery city and state to calculate the zone fee.</small>';
   $('#checkout-error').textContent = '';
   $('#checkout-promo').value='';
   $('#checkout-promo-feedback').textContent='';
   state.promoPreview=null;
   closeCart(); showModal('checkout-modal');
+  previewCheckout();
   trackGrowthEvent('checkout_started');
 }
 function formatDate(value) { try { return new Intl.DateTimeFormat('en-NG',{day:'2-digit',month:'short',year:'numeric'}).format(new Date(value)); } catch { return value || '—'; } }
@@ -498,7 +500,7 @@ function renderMetric(label,value) { return `<div class="metric-card"><small>${h
 function renderAdminTab(tab,data) {
   const el=$('#dashboard-content');
   if(tab==='overview') {
-    el.innerHTML=`<div class="metric-grid">${renderMetric('Paid GMV',money(data.orders?.gmv))}${renderMetric('Paid orders',data.orders?.paid_orders||0)}${renderMetric('Approved stores',data.sellers?.approved||0)}${renderMetric('Pending seller applications',data.sellers?.pending||0)}${renderMetric('Pending payouts',money(data.payouts?.outstanding))}</div>
+    el.innerHTML=`<div class="metric-grid">${renderMetric('Paid GMV',money(data.orders?.gmv))}${renderMetric('Paid orders',data.orders?.paid_orders||0)}${renderMetric('Approved stores',data.sellers?.approved||0)}${renderMetric('Pending seller applications',data.sellers?.pending||0)}${renderMetric('Pending payouts',money(data.payouts?.outstanding))}${renderMetric('Marketplace commission',money(data.finance?.marketplace_commission_kobo))}${renderMetric('Paystack fees (Ethan)',money(data.finance?.gateway_fee_kobo))}${renderMetric('Commission after gateway',money(Number(data.finance?.marketplace_commission_kobo||0)-Number(data.finance?.gateway_fee_kobo||0)))}</div>
       <div class="dash-panel seller-review-queue"><h3>Seller applications awaiting review</h3><p class="modal-intro">${Number(data.sellers?.pending||0)} application(s) are waiting for your decision.</p><button class="dash-action primary" data-dash-tab="sellers">Review seller applications →</button></div>
       <div class="dash-panel"><h3>Recent orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order</th><th>Buyer</th><th>Total</th><th>Payment</th><th>Created</th></tr></thead><tbody>${(data.recent||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong></td><td>${html(o.buyer_email)}</td><td>${money(o.total_kobo)}</td><td>${statusPill(o.payment_status)}</td><td>${formatDate(o.created_at)}</td></tr>`).join('')||tableEmpty('No orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='sellers') {
@@ -514,8 +516,11 @@ function renderAdminTab(tab,data) {
   } else if(tab==='growth') {
     renderAdminGrowth(data);
   } else if(tab==='settings') {
-    const settings=data.settings||{};
-    el.innerHTML=`<div class="dash-panel"><h3>Marketplace settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Default seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||1000)/100).toFixed(1)}"></div><div class="form-field"><label for="market-shipping">Default physical delivery fee (₦)</label><input id="market-shipping" type="number" min="0" step="100" value="${Number(settings.physical_shipping_kobo||200000)/100}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form></div><div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Paystack checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add your Paystack secret key to the Vercel project environment to activate initialize, verify and webhook payments. Never put the secret key in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
+    const settings=data.settings||{},zones=data.delivery_zones||[];
+    const zoneRows=zones.map(z=>`<tr><td><strong>${html(z.name)}</strong>${z.is_fallback?'<br><small>Fallback zone</small>':''}</td><td>${html(z.state)} / ${html(z.city)}</td><td>${money(z.fee_kobo)}</td><td>${statusPill(z.active?'active':'paused')}</td><td><button class="dash-action" data-zone-edit="${z.id}" data-zone-name="${escAttr(z.name)}" data-zone-state="${escAttr(z.state)}" data-zone-city="${escAttr(z.city)}" data-zone-fee="${Number(z.fee_kobo)}">Edit</button>${z.is_fallback?'':` <button class="dash-action" data-zone-toggle="${z.id}" data-active="${z.active?'false':'true'}">${z.active?'Pause':'Activate'}</button>`}</td></tr>`).join('')||tableEmpty('No delivery zones configured.',5);
+    el.innerHTML=`<div class="dash-panel"><h3>Marketplace commercial settings</h3><form class="dash-form" id="market-settings-form"><div class="form-field"><label for="market-commission">Seller commission (%)</label><input id="market-commission" type="number" min="0" max="50" step="0.5" value="${(Number(settings.commission_bps||500)/100).toFixed(1)}"></div><div class="form-field"><label for="market-hold-days">Seller payout protection period (days)</label><input id="market-hold-days" type="number" min="1" max="30" step="1" value="${Number(settings.seller_payout_hold_days||7)}"></div><button class="button button-primary" type="submit">Save marketplace settings</button><p class="form-error" id="market-settings-error"></p></form><p class="modal-intro">Payment processing is paid by ETHAN MARKET. Buyers see no separate gateway surcharge, and seller settlement is calculated from the 5% commission.</p></div>
+    <div class="dash-panel"><h3>Delivery zones and fees</h3><p class="modal-intro">Add destination-specific prices. Exact city + state zones take priority, then state-wide zones, then the nationwide fallback. Fees are manually managed estimates until a courier quote integration is connected.</p><form class="dash-form" id="delivery-zone-form"><input id="delivery-zone-id" type="hidden"><div class="form-field"><label for="delivery-zone-name">Zone name</label><input id="delivery-zone-name" required maxlength="100" placeholder="Lagos Mainland"></div><div class="form-field"><label for="delivery-zone-state">State (or * for all)</label><input id="delivery-zone-state" required maxlength="80" value="Lagos" placeholder="Lagos"></div><div class="form-field"><label for="delivery-zone-city">City (or * for all)</label><input id="delivery-zone-city" required maxlength="80" value="*" placeholder="Ikeja or *"></div><div class="form-field"><label for="delivery-zone-fee">Delivery fee (₦)</label><input id="delivery-zone-fee" type="number" min="0" step="50" required></div><button class="button button-primary" type="submit">Save delivery zone</button><button class="dash-action" id="delivery-zone-reset" type="button">Clear form</button><p class="form-error" id="delivery-zone-error"></p></form><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Zone</th><th>State / city</th><th>Fee</th><th>Status</th><th>Actions</th></tr></thead><tbody>${zoneRows}</tbody></table></div></div>
+    <div class="dash-panel"><h3>Payments configuration</h3><p class="modal-intro">Paystack checkout is ${state.config.payments_enabled?'configured':'not yet enabled'}. Add your Paystack secret key to the Vercel project environment to activate initialize, verify and webhook payments. Never put the secret key in this page.</p><span class="status-pill ${state.config.payments_enabled?'active':'pending'}">${state.config.payments_enabled?'Payments enabled':'Awaiting merchant keys'}</span></div>`;
   }
 }
 function renderSellerTab(tab,data) {
@@ -747,16 +752,30 @@ async function refreshSession(){
   }
   startNotificationPolling();
 }
+async function previewCheckout() {
+  if(!state.user||!state.cart.length)return;
+  const panel=$('#checkout-breakdown');
+  if(panel)panel.innerHTML='<small>Calculating your delivery estimate…</small>';
+  try {
+    const result=await api('checkout.preview',{
+      items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),
+      state:$('#checkout-state').value,city:$('#checkout-city').value,
+      code:$('#checkout-promo').value.trim().toUpperCase()
+    });
+    if(panel)panel.innerHTML=`<div><span>Products subtotal</span><b>${money(result.subtotal_kobo)}</b></div><div><span>Delivery — ${html(result.delivery_zone_name)}</span><b>${money(result.shipping_kobo)}</b></div>${result.discount_kobo?`<div><span>Promo discount</span><b>−${money(result.discount_kobo)}</b></div>`:''}<div><span>Payment processing</span><b>₦0 — covered by Ethan</b></div><div class="checkout-breakdown-total"><span>Total payable</span><b>${money(result.total_kobo)}</b></div>`;
+    $('#checkout-total').textContent=money(result.total_kobo);
+  } catch(error) { if(panel)panel.innerHTML=`<small class="form-error">${html(error.message)}</small>`; }
+}
 async function applyCheckoutPromo() {
   const code=$('#checkout-promo').value.trim().toUpperCase();
   const feedback=$('#checkout-promo-feedback');
   if(!code){feedback.textContent='Enter a promo code first.';return;}
   const button=$('#checkout-apply-promo');button.disabled=true;feedback.textContent='Checking promo code…';
   try {
-    const result=await api('growth.promo-preview',{code,items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity}))});
+    const result=await api('checkout.preview',{code,items:state.cart.map(x=>({product_id:x.product_id,quantity:x.quantity})),state:$('#checkout-state').value,city:$('#checkout-city').value});
     state.promoPreview=result;
-    $('#checkout-total').textContent=money(result.estimated_total_kobo);
-    feedback.textContent=`${result.code} applied — you save ${money(result.discount_kobo)}.`;
+    await previewCheckout();
+    feedback.textContent=`${result.promo_code||code} applied — you save ${money(result.discount_kobo)}.`;
   } catch(error) { state.promoPreview=null;$('#checkout-total').textContent=money(cartTotal());feedback.textContent=error.message; }
   finally { button.disabled=false; }
 }
@@ -935,6 +954,8 @@ $('#product-image-clear').addEventListener('click',()=>{
 });
 $('#checkout-form').addEventListener('submit',submitCheckout);
 $('#checkout-apply-promo').addEventListener('click',applyCheckoutPromo);
+$('#checkout-city').addEventListener('change',previewCheckout);
+$('#checkout-state').addEventListener('change',previewCheckout);
 $('#dashboard-content').addEventListener('submit',async e=>{
   if(e.target.id==='growth-campaign-form'){
     e.preventDefault();$('#growth-campaign-error').textContent='';
@@ -953,12 +974,40 @@ $('#dashboard-content').addEventListener('submit',async e=>{
   }
   if(e.target.id==='market-settings-form'){
     e.preventDefault();$('#market-settings-error').textContent='';
-    try{const data=await api('admin.settings',{commission_bps:Math.round(Number($('#market-commission').value)*100),physical_shipping_kobo:nairaToKobo($('#market-shipping').value),seller_payout_hold_days:Number($('#market-hold-days').value)});state.config.shipping_kobo=Number(data.settings.physical_shipping_kobo||0);state.config.commission_bps=Number(data.settings.commission_bps||1000);notify('Marketplace settings saved.');}
+    try{const data=await api('admin.settings',{commission_bps:Math.round(Number($('#market-commission').value)*100),seller_payout_hold_days:Number($('#market-hold-days').value)});state.config.commission_bps=Number(data.settings.commission_bps||500);notify('Marketplace settings saved.');}
     catch(err){$('#market-settings-error').textContent=err.message;}
+  }
+  if(e.target.id==='delivery-zone-form'){
+    e.preventDefault();$('#delivery-zone-error').textContent='';
+    try{
+      await api('admin.delivery-zone-save',{id:$('#delivery-zone-id').value||'',name:$('#delivery-zone-name').value,state:$('#delivery-zone-state').value,city:$('#delivery-zone-city').value,fee_kobo:nairaToKobo($('#delivery-zone-fee').value)});
+      notify('Delivery zone saved.');loadDashboardTab();
+    }catch(err){$('#delivery-zone-error').textContent=err.message;}
   }
 });
 $('#dashboard-content').addEventListener('change',async e=>{
   if(e.target.matches('[data-order-status]')&&e.target.value){try{await api('admin.order-status',{id:e.target.dataset.orderStatus,status:e.target.value});notify('Order status updated.');loadDashboardTab();}catch(err){notify(err.message);}}
+});
+$('#dashboard-content').addEventListener('click',async e=>{
+  const edit=e.target.closest('[data-zone-edit]');
+  if(edit){
+    $('#delivery-zone-id').value=edit.dataset.zoneEdit;
+    $('#delivery-zone-name').value=edit.dataset.zoneName;
+    $('#delivery-zone-state').value=edit.dataset.zoneState;
+    $('#delivery-zone-city').value=edit.dataset.zoneCity;
+    $('#delivery-zone-fee').value=Number(edit.dataset.zoneFee)/100;
+    $('#delivery-zone-form').scrollIntoView({behavior:'smooth',block:'center'});
+    return;
+  }
+  const toggle=e.target.closest('[data-zone-toggle]');
+  if(toggle){
+    toggle.disabled=true;
+    try{await api('admin.delivery-zone-status',{id:toggle.dataset.zoneToggle,active:toggle.dataset.active==='true'});notify('Delivery zone status updated.');loadDashboardTab();}
+    catch(err){notify(err.message);toggle.disabled=false;}
+  }
+  if(e.target.id==='delivery-zone-reset'){
+    $('#delivery-zone-form').reset();$('#delivery-zone-id').value='';$('#delivery-zone-state').value='Lagos';$('#delivery-zone-city').value='*';$('#delivery-zone-error').textContent='';
+  }
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)pollNotifications(true);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeCart();$('.modal-backdrop').filter(m=>!m.hidden).forEach(m=>closeModal(m.id));}});

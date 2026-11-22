@@ -77,3 +77,30 @@
 #product-form button[type=submit]:disabled{opacity:.65;cursor:wait}
 #product-form input:disabled{background:#f4f6f7;color:#87929a}
 @media(max-width:560px){.product-image-preview{align-items:flex-start;flex-wrap:wrap}.product-image-preview img{width:76px;height:76px}}
+
+
+/* Transparent checkout and delivery-zone pricing */
+.checkout-breakdown {
+  display: grid;
+  gap: 9px;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #e7eaf0);
+  border-radius: 12px;
+  background: var(--surface-soft, #f8fafc);
+}
+.checkout-breakdown > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: .92rem;
+}
+.checkout-breakdown > div b { text-align: right; }
+.checkout-breakdown .checkout-breakdown-total {
+  padding-top: 10px;
+  margin-top: 2px;
+  border-top: 1px solid var(--line, #e7eaf0);
+  font-size: 1rem;
+}
+.checkout-breakdown small { color: var(--muted, #64748b); line-height: 1.5; }
+.checkout-breakdown .form-error { color: #b42318; }
