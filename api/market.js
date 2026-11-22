@@ -93,11 +93,13 @@ const schema = [
     price_kobo bigint NOT NULL CHECK (price_kobo >= 100), compare_at_kobo bigint CHECK (compare_at_kobo IS NULL OR compare_at_kobo >= price_kobo),
     image_url text NOT NULL DEFAULT '', sku text NOT NULL DEFAULT '', stock_qty int NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
     digital_delivery_url text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'pending' CHECK (status IN ('draft','pending','active','rejected','archived')),
-    featured boolean NOT NULL DEFAULT false, views int NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+    featured boolean NOT NULL DEFAULT false, views int NOT NULL DEFAULT 0, variants jsonb NOT NULL DEFAULT '[]'::jsonb, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE(seller_id, slug)
   )`,
   `CREATE INDEX IF NOT EXISTS market_products_public_idx ON market_products(status, category_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS market_products_seller_idx ON market_products(seller_id, status)`,
+  `ALTER TABLE market_products ADD COLUMN IF NOT EXISTS variants jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `CREATE TABLE IF NOT EXISTS market_schema_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS market_orders (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_number text NOT NULL UNIQUE,
     buyer_id uuid NOT NULL REFERENCES market_users(id), buyer_email text NOT NULL,
@@ -213,8 +215,10 @@ const schema = [
     seller_net_kobo bigint NOT NULL DEFAULT 0, fulfillment_status text NOT NULL DEFAULT 'unfulfilled'
       CHECK (fulfillment_status IN ('unfulfilled','processing','dispatched','delivered','cancelled')),
     tracking_number text NOT NULL DEFAULT '', tracking_carrier text NOT NULL DEFAULT '', digital_delivery_url text NOT NULL DEFAULT '',
-    stock_deducted boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
+    stock_deducted boolean NOT NULL DEFAULT false, variant_id text NOT NULL DEFAULT '', variant_label text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_id text NOT NULL DEFAULT ''`,
+  `ALTER TABLE market_order_items ADD COLUMN IF NOT EXISTS variant_label text NOT NULL DEFAULT ''`,
   `CREATE INDEX IF NOT EXISTS market_order_items_seller_idx ON market_order_items(seller_id, fulfillment_status, created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS market_payments (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid NOT NULL REFERENCES market_orders(id),
@@ -325,7 +329,7 @@ async function ensureSchema() {
     // Check the complete marketplace table set first; only bootstrap when needed.
     const requiredTables = [
       'market_users','market_sessions','market_categories','market_sellers',
-      'market_products','market_orders','market_order_items','market_payments',
+      'market_products','market_schema_migrations','market_orders','market_order_items','market_payments',
       'market_payouts','market_disputes','market_wishlists','market_reviews','market_settings',
       'market_audit_logs','market_rate_limits','market_notifications','market_growth_profiles','market_growth_attributions','market_growth_campaigns','market_promo_codes','market_promo_redemptions','market_affiliate_conversions','market_growth_events','market_delivery_zones'
     ];
@@ -652,36 +656,25 @@ async function growthTrack(db,req,body) {
   return {ok:true};
 }
 
-async function checkoutPreview(db,req,body) {
-  const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);
-  await rateLimit(db,'checkout-preview',user.id,30,15);
-  const items=Array.isArray(body.items)?body.items:[];
-  if(!items.length||items.length>30) throw new HttpError(400,'Your cart is empty or invalid.');
-  const ids=[...new Set(items.map(x=>text(x.product_id,80)).filter(x=>/^[0-9a-f-]{36}$/i.test(x)))];
-  if(!ids.length) throw new HttpError(400,'Your basket is not valid.');
-  const {rows}=await db.query(
-    `SELECT p.id,p.price_kobo,p.product_type,s.commission_bps FROM market_products p
-     JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved'`,[ids]
-  );
-  if(rows.length!==ids.length) throw new HttpError(409,'One or more products are no longer available.');
-  let subtotal=0,physical=false,commission=0;
-  for(const product of rows) {
-    const quantity=items.filter(x=>x.product_id===product.id).reduce((n,x)=>n+Math.min(20,Math.max(1,parseInt(x.quantity,10)||1)),0);
-    const gross=Number(product.price_kobo)*quantity;
-    subtotal+=gross;
-    commission+=calculateCommissionKobo(gross,Number(product.commission_bps));
-    if(product.product_type==='physical') physical=true;
-  }
-  const zone=physical?await resolveDeliveryZone(db,body.state||'',body.city||''):null;
-  const shipping=zone?zone.fee_kobo:0;
-  const promoCode=text(body.code||body.promo_code,40).toUpperCase();
-  const promo=promoCode?await resolvePromo(db,user,promoCode,subtotal,commission,false):null;
-  const discount=promo?promo.discount_kobo:0;
-  const breakdown=calculateCheckoutBreakdown({subtotalKobo:subtotal,deliveryKobo:shipping,discountKobo:discount});
-  return {subtotal_kobo:breakdown.subtotalKobo,shipping_kobo:breakdown.deliveryKobo,discount_kobo:breakdown.discountKobo,
-    total_kobo:breakdown.totalKobo,delivery_zone_name:zone?.name||'Digital products',
-    delivery_location_label:[text(body.city,80),text(body.state,80)].filter(Boolean).join(', '),
-    payment_processing_fee_kobo:0,payment_processing_bearer:'ETHAN MARKET',promo_code:promo?.code||''};
+async function checkoutPreview(db,req,body){
+ const user=await requireRole(req,db,['buyer','seller','admin','super_admin']);await rateLimit(db,'checkout-preview',user.id,30,15);
+ const items=Array.isArray(body.items)?body.items:[];if(!items.length||items.length>30)throw new HttpError(400,'Your cart is empty or invalid.');
+ const ids=[...new Set(items.map(x=>text(x.product_id,80)).filter(x=>/^[0-9a-f-]{36}$/i.test(x)))];if(!ids.length)throw new HttpError(400,'Your basket is not valid.');
+ const {rows}=await db.query("SELECT p.id,p.price_kobo,p.product_type,p.stock_qty,p.variants,s.commission_bps FROM market_products p JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved'",[ids]);
+ if(rows.length!==ids.length)throw new HttpError(409,'One or more products are no longer available.');
+ let subtotal=0,physical=false,commission=0;
+ for(const item of items){
+  const p=rows.find(x=>x.id===item.product_id);if(!p)throw new HttpError(409,'A product is no longer available.');
+  const quantity=Math.min(20,Math.max(1,parseInt(item.quantity,10)||1)),variants=Array.isArray(p.variants)?p.variants:[];
+  let unitPrice=Number(p.price_kobo);
+  if(variants.length){const v=variants.find(x=>x.id===item.variant_id&&x.active!==false);if(!v)throw new HttpError(409,'Choose an available variation for '+p.name+'.');unitPrice=Number(v.price_kobo);if(Number(v.stock_qty)<quantity)throw new HttpError(409,v.name+' has only '+v.stock_qty+' item(s) available.');}
+  else if(item.variant_id)throw new HttpError(409,'This variation is no longer available.');
+  const gross=unitPrice*quantity;subtotal+=gross;commission+=calculateCommissionKobo(gross,Number(p.commission_bps));if(p.product_type==='physical')physical=true;
+ }
+ const zone=physical?await resolveDeliveryZone(db,body.state||'',body.city||''):null,shipping=zone?zone.fee_kobo:0,code=text(body.code||body.promo_code,40).toUpperCase();
+ const promo=code?await resolvePromo(db,user,code,subtotal,commission,false):null,discount=promo?promo.discount_kobo:0;
+ const breakdown=calculateCheckoutBreakdown({subtotalKobo:subtotal,deliveryKobo:shipping,discountKobo:discount});
+ return {subtotal_kobo:breakdown.subtotalKobo,shipping_kobo:breakdown.deliveryKobo,discount_kobo:breakdown.discountKobo,total_kobo:breakdown.totalKobo,delivery_zone_name:zone?.name||'Digital products',delivery_location_label:[text(body.city,80),text(body.state,80)].filter(Boolean).join(', '),payment_processing_fee_kobo:0,payment_processing_bearer:'ETHAN MARKET',promo_code:promo?.code||''};
 }
 
 async function growthPromoPreview(db,req,body) {
@@ -863,7 +856,7 @@ async function listProducts(db, params = {}) {
   const limit = Math.min(Math.max(Number(params.limit) || 24, 1), 60);
   values.push(limit);
   const { rows } = await db.query(
-    `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.featured,p.created_at,
+    `SELECT p.id,p.name,p.slug,p.description,p.product_type,p.price_kobo,p.compare_at_kobo,p.image_url,p.stock_qty,p.variants,p.featured,p.created_at,
        c.name AS category_name,c.slug AS category_slug,s.id AS seller_id,s.store_name,s.slug AS store_slug,s.city,s.state,
        COALESCE(rv.avg_rating,0) AS rating,COALESCE(rv.review_count,0) AS review_count
      FROM market_products p JOIN market_sellers s ON s.id=p.seller_id LEFT JOIN market_categories c ON c.id=p.category_id
@@ -972,7 +965,7 @@ async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
   const [products, orders, payouts, disputes, salesSummary, dailySales, topProducts] = await Promise.all([
-    db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
+    db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.variants,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
     db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
     db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,eligible_at,hold_reason,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id]),
@@ -1028,44 +1021,40 @@ async function saveSellerProfile(db, req, body) {
   return { seller: sellerPublic(rows[0]) };
 }
 
-async function saveProduct(db, req, body) {
-  const user = await requireRole(req, db, ['seller','admin','super_admin']);
-  const seller = await getSellerByUser(db,user.id,true);
-  const name = text(body.name,180);
-  const description = text(body.description,5000);
-  const price = money(body.price_kobo);
-  const type = body.product_type === 'digital' ? 'digital' : 'physical';
-  const stock = type === 'digital' ? 999999 : Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
-  const imageUrl = text(body.image_url,1000);
-  if (name.length < 3 || description.length < 10 || price < 100) throw new HttpError(400,'Add a product name, a useful description and a price of at least ₦1.');
-  if (body.compare_at_kobo && money(body.compare_at_kobo) < price) throw new HttpError(400,'The previous price must be higher than the selling price.');
-  if (imageUrl && !/^https:\/\//i.test(imageUrl)) throw new HttpError(400,'Product image must use a secure HTTPS image URL.');
-  if (type === 'digital' && body.digital_delivery_url && !/^https:\/\//i.test(String(body.digital_delivery_url))) throw new HttpError(400,'Digital delivery links must use HTTPS.');
-  if (type === 'physical' && stock < 1) throw new HttpError(400,'A physical product needs at least one item in stock.');
-  const category = await db.query('SELECT id FROM market_categories WHERE id::text=$1 OR slug=$1 LIMIT 1',[text(body.category_id,100)]);
-  if (!category.rows.length) throw new HttpError(400,'Choose a valid product category.');
-  const productId = text(body.id,80);
-  if (productId) {
-    const { rows } = await db.query(
-      `UPDATE market_products SET category_id=$3,name=$4,description=$5,product_type=$6,price_kobo=$7,
-        compare_at_kobo=$8,image_url=$9,sku=$10,stock_qty=$11,digital_delivery_url=$12,status='pending',featured=false,updated_at=now()
-       WHERE id=$1 AND seller_id=$2 RETURNING id,name,status,price_kobo,product_type,stock_qty`,
-      [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
-    );
-    if (!rows.length) throw new HttpError(404,'Product was not found in your store.');
-    await audit(db,user.id,'PRODUCT_UPDATED','product',productId);
-    return { product: rows[0] };
-  }
-  const slug = slugify(name) + '-' + crypto.randomBytes(2).toString('hex');
-  const { rows } = await db.query(
-    `INSERT INTO market_products(seller_id,category_id,name,slug,description,product_type,price_kobo,compare_at_kobo,image_url,sku,stock_qty,digital_delivery_url,status)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty`,
-    [seller.id,category.rows[0].id,name,slug,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'']
-  );
-  await audit(db,user.id,'PRODUCT_SUBMITTED','product',rows[0].id);
-  return { product: rows[0] };
+async function saveProduct(db,req,body){
+ const user=await requireRole(req,db,['seller','admin','super_admin']),seller=await getSellerByUser(db,user.id,true);
+ const name=text(body.name,180),description=text(body.description,5000),type=body.product_type==='digital'?'digital':'physical',price=money(body.price_kobo),imageUrl=text(body.image_url,1000);
+ if(name.length<3||description.length<10||price<100)throw new HttpError(400,'Add a product name, useful description and price of at least ₦1.');
+ if(body.compare_at_kobo&&money(body.compare_at_kobo)<price)throw new HttpError(400,'The previous price must be higher than the selling price.');
+ if(imageUrl&&!/^https:\/\//i.test(imageUrl))throw new HttpError(400,'Product image must use HTTPS.');
+ if(type==='digital'&&body.digital_delivery_url&&!/^https:\/\//i.test(String(body.digital_delivery_url)))throw new HttpError(400,'Digital delivery links must use HTTPS.');
+ const category=await db.query('SELECT id FROM market_categories WHERE (id::text=$1 OR slug=$1) AND is_active=true LIMIT 1',[text(body.category_id,100)]);
+ if(!category.rows.length)throw new HttpError(400,'Choose a valid active product category.');
+ const rawVariants=type==='physical'&&Array.isArray(body.variants)?body.variants:[];
+ if(rawVariants.length>50)throw new HttpError(400,'A product can have up to 50 variations.');
+ const seen=new Set(),variants=[];
+ for(const raw of rawVariants){
+  const label=text(raw.name,80),sku=text(raw.sku,80),variantPrice=raw.price_kobo===null||raw.price_kobo===undefined||raw.price_kobo===''?price:money(raw.price_kobo),stock=parseInt(raw.stock_qty,10);
+  if(!label)throw new HttpError(400,'Every variation needs an option name, such as Small or Blue.');
+  if(variantPrice<100)throw new HttpError(400,'Variation prices must be at least ₦1.');
+  if(!Number.isInteger(stock)||stock<0||stock>100000)throw new HttpError(400,'Variation stock must be a whole number from 0 to 100,000.');
+  const key=sku.toLowerCase();if(key&&seen.has(key))throw new HttpError(400,'Variation SKUs must be unique within this product.');if(key)seen.add(key);
+  variants.push({id:/^[0-9a-f-]{36}$/i.test(String(raw.id||''))?String(raw.id):crypto.randomUUID(),name:label,sku,price_kobo:variantPrice,stock_qty:stock,active:true});
+ }
+ const stock=type==='digital'?999999:variants.length?variants.reduce((n,v)=>n+v.stock_qty,0):Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
+ if(type==='physical'&&stock<1)throw new HttpError(400,'A physical product needs at least one item in stock.');
+ const productId=text(body.id,80),variantsJson=JSON.stringify(variants);
+ if(productId){
+  const result=await db.query("UPDATE market_products SET category_id=$3,name=$4,description=$5,product_type=$6,price_kobo=$7,compare_at_kobo=$8,image_url=$9,sku=$10,stock_qty=$11,digital_delivery_url=$12,variants=$13::jsonb,status='pending',featured=false,updated_at=now() WHERE id=$1 AND seller_id=$2 RETURNING id,name,status,price_kobo,product_type,stock_qty,variants",
+  [productId,seller.id,category.rows[0].id,name,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'',variantsJson]);
+  if(!result.rows.length)throw new HttpError(404,'Product was not found in your store.');
+  await audit(db,user.id,'PRODUCT_UPDATED','product',productId,{variation_count:variants.length});return {product:result.rows[0]};
+ }
+ const slug=slugify(name)+'-'+crypto.randomBytes(2).toString('hex');
+ const result=await db.query("INSERT INTO market_products(seller_id,category_id,name,slug,description,product_type,price_kobo,compare_at_kobo,image_url,sku,stock_qty,digital_delivery_url,variants,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,'pending') RETURNING id,name,status,price_kobo,product_type,stock_qty,variants",
+ [seller.id,category.rows[0].id,name,slug,description,type,price,body.compare_at_kobo?money(body.compare_at_kobo):null,imageUrl,text(body.sku,80),stock,type==='digital'?text(body.digital_delivery_url,1500):'',variantsJson]);
+ await audit(db,user.id,'PRODUCT_SUBMITTED','product',result.rows[0].id,{variation_count:variants.length});return {product:result.rows[0]};
 }
-
 
 async function bulkSaveProducts(db,req,body) {
   const user=await requireRole(req,db,['seller','admin','super_admin']);
@@ -1143,13 +1132,8 @@ async function checkout(db, req, body) {
   await rateLimit(db, 'checkout', user.id, 10, 60);
   const items = Array.isArray(body.items) ? body.items : [];
   if (!items.length || items.length > 30) throw new HttpError(400,'Your cart is empty or contains too many products.');
-  const quantities = new Map();
-  for (const item of items) {
-    const id = text(item.product_id,80); const q = Math.min(Math.max(parseInt(item.quantity,10)||0,0),20);
-    if (!/^[0-9a-f-]{36}$/i.test(id) || q < 1) throw new HttpError(400,'Your cart contains an invalid item.');
-    quantities.set(id,(quantities.get(id)||0)+q);
-    if (quantities.get(id) > 20) throw new HttpError(400,'A product quantity cannot exceed 20 per checkout.');
-  }
+  const quantities=new Map();
+  for(const item of items){const id=text(item.product_id,80),variantId=text(item.variant_id,80),q=Math.min(Math.max(parseInt(item.quantity,10)||0,0),20);if(!/^[0-9a-f-]{36}$/i.test(id)||q<1)throw new HttpError(400,'Your cart contains an invalid item.');const key=id+'|'+variantId;quantities.set(key,(quantities.get(key)||0)+q);if(quantities.get(key)>20)throw new HttpError(400,'A product variation quantity cannot exceed 20 per checkout.');}
   const dbClient = await db.connect();
   let order;
   try {
@@ -1159,34 +1143,25 @@ async function checkout(db, req, body) {
        WHERE r.order_id=o.id AND r.status='reserved' AND (o.payment_status<>'pending' OR o.created_at<now()-interval '30 minutes')`
     );
     await dbClient.query("UPDATE market_orders SET payment_status='failed',status='cancelled',updated_at=now() WHERE payment_status='pending' AND created_at < now()-interval '30 minutes'");
-    const ids = [...quantities.keys()];
+    const ids=[...new Set([...quantities.keys()].map(k=>k.split('|')[0]))];
     const { rows: products } = await dbClient.query(
       `SELECT p.*,s.id AS approved_seller_id,s.commission_bps,s.store_name FROM market_products p
        JOIN market_sellers s ON s.id=p.seller_id WHERE p.id=ANY($1::uuid[]) AND p.status='active' AND s.seller_status='approved' FOR UPDATE OF p`, [ids]
     );
     if (products.length !== ids.length) throw new HttpError(409,'One or more products are no longer available. Refresh your cart.');
-    let subtotal = 0; let physical = false; let marketplaceFee = 0;
-    const orderId = crypto.randomUUID();
-    const orderNumber = 'EM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
-    const ref = 'EM' + Date.now().toString() + crypto.randomBytes(5).toString('hex').toUpperCase();
-    const itemSnapshots=[];
-    for (const p of products) {
-      const quantity = quantities.get(p.id);
-      if (p.product_type === 'physical') {
-        const reserved = await dbClient.query(
-          `SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi
-           JOIN market_orders o ON o.id=oi.order_id
-           WHERE oi.product_id=$1 AND oi.product_type='physical' AND o.payment_status='pending'
-             AND o.created_at >= now()-interval '30 minutes'`, [p.id]
-        );
-        const available = Number(p.stock_qty) - Number(reserved.rows[0]?.quantity || 0);
-        if (available < quantity) throw new HttpError(409,`${p.name} has only ${Math.max(available,0)} item(s) currently available.`);
+    let subtotal=0,physical=false,marketplaceFee=0;
+    const orderId=crypto.randomUUID(),orderNumber='EM-'+new Date().toISOString().slice(0,10).replace(/-/g,'')+'-'+crypto.randomBytes(3).toString('hex').toUpperCase(),ref='EM'+Date.now().toString()+crypto.randomBytes(5).toString('hex').toUpperCase(),itemSnapshots=[];
+    for(const p of products){
+      const lines=[...quantities.entries()].filter(([key])=>key.startsWith(p.id+'|')),variants=Array.isArray(p.variants)?p.variants:[];let productQuantity=0;
+      for(const [key,quantity] of lines){
+        const variantId=key.slice(p.id.length+1);let variant=null,unitPrice=Number(p.price_kobo),variantLabel='';
+        if(variants.length){variant=variants.find(v=>v.id===variantId&&v.active!==false);if(!variant)throw new HttpError(409,'Choose an available variation for '+p.name+'.');unitPrice=Number(variant.price_kobo);variantLabel=String(variant.name||'');
+          if(p.product_type==='physical'){const reserved=await dbClient.query("SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.variant_id=$2 AND o.payment_status='pending' AND o.created_at>=now()-interval '30 minutes'",[p.id,variantId]);const available=Number(variant.stock_qty)-Number(reserved.rows[0]?.quantity||0);if(available<quantity)throw new HttpError(409,variant.name+' has only '+Math.max(available,0)+' item(s) currently available.');}
+        }else if(variantId)throw new HttpError(409,'This product variation is no longer available.');
+        productQuantity+=quantity;const gross=unitPrice*quantity,commission=calculateCommissionKobo(gross,Number(p.commission_bps));subtotal+=gross;marketplaceFee+=commission;if(p.product_type==='physical')physical=true;
+        itemSnapshots.push({p,quantity,commission,net:gross-commission,variantId,variantLabel,unitPrice});
       }
-      subtotal += Number(p.price_kobo) * quantity;
-      if (p.product_type === 'physical') physical = true;
-      const commission = calculateCommissionKobo(Number(p.price_kobo)*quantity,Number(p.commission_bps));
-      marketplaceFee+=commission;
-      itemSnapshots.push({p,quantity,commission,net:Number(p.price_kobo)*quantity-commission});
+      if(p.product_type==='physical'&&productQuantity){const reserved=await dbClient.query("SELECT COALESCE(sum(oi.quantity),0)::int AS quantity FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.product_type='physical' AND o.payment_status='pending' AND o.created_at>=now()-interval '30 minutes'",[p.id]);const available=Number(p.stock_qty)-Number(reserved.rows[0]?.quantity||0);if(available<productQuantity)throw new HttpError(409,p.name+' has only '+Math.max(available,0)+' item(s) currently available.');}
     }
     if (!Number.isSafeInteger(subtotal) || subtotal < 100) throw new HttpError(400,'The cart total is invalid.');
     const deliveryZone = physical ? await resolveDeliveryZone(dbClient,body.state,body.city) : null;
@@ -1220,9 +1195,9 @@ async function checkout(db, req, body) {
     );
     for (const it of itemSnapshots) {
       await dbClient.query(
-        `INSERT INTO market_order_items(order_id,product_id,seller_id,product_name,product_type,quantity,unit_price_kobo,commission_kobo,seller_net_kobo,digital_delivery_url,fulfillment_status)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [orderId,it.p.id,it.p.seller_id,it.p.name,it.p.product_type,it.quantity,it.p.price_kobo,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled']
+        `INSERT INTO market_order_items(order_id,product_id,seller_id,product_name,product_type,quantity,unit_price_kobo,commission_kobo,seller_net_kobo,digital_delivery_url,fulfillment_status,variant_id,variant_label)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [orderId,it.p.id,it.p.seller_id,it.p.name+(it.variantLabel?' — '+it.variantLabel:''),it.p.product_type,it.quantity,it.unitPrice,it.commission,it.net,it.p.product_type==='digital'?text(it.p.digital_delivery_url,1500):'',it.p.product_type==='digital'?'delivered':'unfulfilled',it.variantId,it.variantLabel]
       );
     }
     await dbClient.query('INSERT INTO market_payments(order_id,reference,amount_kobo) VALUES($1,$2,$3)',[orderId,ref,total]);
@@ -1288,8 +1263,8 @@ async function finalizePaid(db, transaction) {
     if (order.payment_status !== 'paid') {
       await client.query("UPDATE market_orders SET payment_status='paid',status=CASE WHEN NOT EXISTS(SELECT 1 FROM market_order_items WHERE order_id=$1 AND product_type='physical') THEN 'delivered' ELSE 'processing' END,payment_verified_at=now(),updated_at=now() WHERE id=$1",[order.id]);
       await client.query("UPDATE market_payments SET status='success',gateway_payload=$2::jsonb,verified_at=now() WHERE reference=$1",[String(transaction.reference),JSON.stringify(transaction)]);
-      const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,quantity',[order.id]);
-      for (const row of changed) if (row.product_id) await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);
+      const { rows:changed } = await client.query('UPDATE market_order_items SET stock_deducted=true WHERE order_id=$1 AND product_type=\'physical\' AND stock_deducted=false RETURNING product_id,quantity,variant_id',[order.id]);
+      for(const row of changed)if(row.product_id){await client.query('UPDATE market_products SET stock_qty=GREATEST(stock_qty-$2,0),updated_at=now() WHERE id=$1',[row.product_id,row.quantity]);if(row.variant_id)await client.query("UPDATE market_products SET variants=(SELECT COALESCE(jsonb_agg(CASE WHEN v->>'id'=$2 THEN jsonb_set(v,'{stock_qty}',to_jsonb(GREATEST(COALESCE((v->>'stock_qty')::int,0)-$3,0))) ELSE v END),'[]'::jsonb) FROM jsonb_array_elements(variants) v),updated_at=now() WHERE id=$1",[row.product_id,row.variant_id,row.quantity]);}
       const holdSetting=await client.query("SELECT value FROM market_settings WHERE key='seller_payout_hold_days'");
       const holdDays=Math.min(30,Math.max(1,Number(holdSetting.rows[0]?.value)||7));
       await client.query(
