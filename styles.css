@@ -104,3 +104,13 @@
 }
 .checkout-breakdown small { color: var(--muted, #64748b); line-height: 1.5; }
 .checkout-breakdown .form-error { color: #b42318; }
+
+
+/* Seller Studio sales analytics */
+.seller-analytics-panel { margin-top: 18px; }
+.seller-sales-comparison { margin: 14px 0 18px; color: var(--muted, #64748b); }
+.seller-sales-chart { display:flex; align-items:stretch; gap:10px; min-height:150px; padding:14px 10px 8px; overflow-x:auto; border:1px solid var(--line,#e7eaf0); border-radius:12px; background:var(--surface-soft,#f8fafc); }
+.seller-sales-bar-item { display:flex; flex:1 0 34px; min-width:34px; flex-direction:column; justify-content:flex-end; align-items:center; gap:8px; }
+.seller-sales-bar-track { display:flex; align-items:flex-end; width:100%; height:108px; overflow:hidden; border-radius:6px; background:rgba(100,116,139,.10); }
+.seller-sales-bar { width:100%; min-height:2px; border-radius:6px 6px 2px 2px; background:var(--primary,#173b72); }
+.seller-sales-bar-item small { white-space:nowrap; color:var(--muted,#64748b); font-size:.7rem; }

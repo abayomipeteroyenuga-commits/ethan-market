@@ -971,20 +971,43 @@ async function notificationsMarkRead(db, req, body) {
 async function sellerDashboard(db, req) {
   const user = await requireRole(req, db, ['seller','admin','super_admin']);
   const seller = await getSellerByUser(db,user.id,true);
-  const [products, orders, payouts, disputes] = await Promise.all([
+  const [products, orders, payouts, disputes, salesSummary, dailySales, topProducts] = await Promise.all([
     db.query(`SELECT p.id,p.name,p.price_kobo,p.compare_at_kobo,p.stock_qty,p.status,p.product_type,p.created_at,p.description,p.image_url,p.sku,p.digital_delivery_url,c.name AS category_name,c.id AS category_id FROM market_products p LEFT JOIN market_categories c ON c.id=p.category_id WHERE p.seller_id=$1 ORDER BY p.created_at DESC LIMIT 100`,[seller.id]),
     db.query(`SELECT oi.id,oi.product_name,oi.quantity,oi.unit_price_kobo,oi.fulfillment_status,oi.tracking_number,oi.tracking_carrier,o.order_number,o.status,o.payment_status,o.created_at,o.recipient_name,o.phone,o.shipping_address,oi.buyer_confirmed_at
       FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.seller_id=$1 AND o.payment_status='paid' ORDER BY o.created_at DESC LIMIT 100`,[seller.id]),
     db.query('SELECT id,gross_kobo,commission_kobo,net_kobo,status,payout_reference,eligible_at,hold_reason,created_at,paid_at FROM market_payouts WHERE seller_id=$1 ORDER BY created_at DESC LIMIT 100',[seller.id]),
     db.query(`SELECT d.*,o.order_number,oi.product_name,u.full_name AS buyer_name FROM market_disputes d
       JOIN market_orders o ON o.id=d.order_id JOIN market_order_items oi ON oi.id=d.order_item_id
-      JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id])
+      JOIN market_users u ON u.id=d.buyer_id WHERE d.seller_id=$1 ORDER BY d.opened_at DESC LIMIT 100`,[seller.id]),
+    db.query(`SELECT COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity),0)::bigint AS all_time_sales_kobo,
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity) FILTER(WHERE o.created_at>=date_trunc('month',now())),0)::bigint AS current_month_sales_kobo,
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity) FILTER(WHERE o.created_at>=date_trunc('month',now())-interval '1 month' AND o.created_at<date_trunc('month',now())),0)::bigint AS previous_month_sales_kobo,
+      count(DISTINCT o.id) AS all_time_orders,
+      count(DISTINCT o.id) FILTER(WHERE o.created_at>=date_trunc('month',now())) AS current_month_orders,
+      COALESCE(sum(oi.quantity),0)::bigint AS all_time_units,
+      COALESCE(sum(oi.quantity) FILTER(WHERE o.created_at>=date_trunc('month',now())),0)::bigint AS current_month_units,
+      COALESCE(sum(oi.commission_kobo),0)::bigint AS all_time_commission_kobo
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid'`,[seller.id]),
+    db.query(`SELECT date_trunc('day',o.created_at)::date AS day,
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity),0)::bigint AS sales_kobo,
+      count(DISTINCT o.id)::int AS orders,COALESCE(sum(oi.quantity),0)::bigint AS units
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid' AND o.created_at>=current_date-interval '13 days'
+      GROUP BY date_trunc('day',o.created_at)::date ORDER BY day`,[seller.id]),
+    db.query(`SELECT oi.product_id,oi.product_name,
+      COALESCE(sum(oi.unit_price_kobo::numeric*oi.quantity),0)::bigint AS sales_kobo,
+      COALESCE(sum(oi.quantity),0)::bigint AS units,count(DISTINCT o.id)::int AS orders
+      FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id
+      WHERE oi.seller_id=$1 AND o.payment_status='paid'
+      GROUP BY oi.product_id,oi.product_name ORDER BY sales_kobo DESC,units DESC LIMIT 5`,[seller.id])
   ]);
   const totals = await db.query(`SELECT COALESCE(sum(net_kobo),0) AS net_total,COALESCE(sum(net_kobo) FILTER(WHERE status IN ('pending','approved','held')),0) AS outstanding,COALESCE(sum(net_kobo) FILTER(WHERE status='paid'),0) AS paid FROM market_payouts WHERE seller_id=$1`,[seller.id]);
   const growthProfile = await ensureGrowthProfile(db,user.id);
   return {
     seller: sellerPublic(seller), products: products.rows, orders: orders.rows,
     payouts: payouts.rows, disputes: disputes.rows, totals: totals.rows[0],
+    sales_analytics: {summary:salesSummary.rows[0],daily:dailySales.rows,top_products:topProducts.rows},
     referral_url: 'https://market.ethandigitalacademy.org/?ref=' + encodeURIComponent(growthProfile.referral_code)
   };
 }
