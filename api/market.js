@@ -1106,7 +1106,15 @@ async function saveProduct(db,req,body){
  if(type==='digital'&&body.digital_delivery_url&&!/^https:\/\//i.test(String(body.digital_delivery_url)))throw new HttpError(400,'Digital delivery links must use HTTPS.');
  const category=await db.query('SELECT id FROM market_categories WHERE (id::text=$1 OR slug=$1) AND is_active=true LIMIT 1',[text(body.category_id,100)]);
  if(!category.rows.length)throw new HttpError(400,'Choose a valid active product category.');
- const rawVariants=type==='physical'&&Array.isArray(body.variants)?body.variants:[];
+  const productId=text(body.id,80);
+  let existingVariants=[];
+  if(productId&&!Array.isArray(body.variants)){
+   const existing=await db.query('SELECT variants,product_type FROM market_products WHERE id=$1 AND seller_id=$2 LIMIT 1',[productId,seller.id]);
+   if(!existing.rows.length)throw new HttpError(404,'Product was not found in your store.');
+   existingVariants=Array.isArray(existing.rows[0].variants)?existing.rows[0].variants:[];
+   if(existingVariants.length&&type!=='physical')throw new HttpError(400,'This listing has existing option inventory and must remain a physical product.');
+  }
+  const rawVariants=type==='physical'?(Array.isArray(body.variants)?body.variants:existingVariants):[];
  if(rawVariants.length>50)throw new HttpError(400,'A product can have up to 50 variations.');
  const seen=new Set(),variants=[];
  for(const raw of rawVariants){
@@ -1119,7 +1127,7 @@ async function saveProduct(db,req,body){
  }
  const stock=type==='digital'?999999:variants.length?variants.reduce((n,v)=>n+v.stock_qty,0):Math.min(Math.max(parseInt(body.stock_qty,10)||0,0),100000);
  if(type==='physical'&&stock<1)throw new HttpError(400,'A physical product needs at least one item in stock.');
- const productId=text(body.id,80),variantsJson=JSON.stringify(variants);
+  const variantsJson=JSON.stringify(variants);
  if(productId){
   const pending=await db.query("SELECT oi.variant_id::text AS variant_id,SUM(oi.quantity)::int AS quantity FROM market_order_items oi JOIN market_orders o ON o.id=oi.order_id WHERE oi.product_id=$1 AND oi.product_type='physical' AND o.payment_status='pending' AND o.created_at>=now()-interval '30 minutes' GROUP BY oi.variant_id",[productId]);
   const reservedTotal=pending.rows.reduce((n,row)=>n+Number(row.quantity||0),0);

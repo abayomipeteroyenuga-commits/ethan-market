@@ -547,7 +547,7 @@ function renderSellerTab(tab,data) {
     const products=data.products||[];
     const counts={active:products.filter(p=>p.status==='active').length,pending:products.filter(p=>p.status==='pending').length,draft:products.filter(p=>p.status==='draft').length,rejected:products.filter(p=>p.status==='rejected').length};
     const lowStock=data.low_stock||products.filter(p=>p.product_type==='physical'&&Number(p.stock_qty)<=5);
-    el.innerHTML=`<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products</h3><p class="modal-intro">Upload physical goods or digital products. Every new or edited listing enters review before it goes live.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div><div class="metric-grid">${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Drafts',counts.draft)}${renderMetric('Needs attention',counts.rejected)}${renderMetric('Low stock (≤5)',lowStock.length)}</div><div class="dash-panel seller-bulk-import"><h3>Bulk product upload</h3><p class="modal-intro">Import up to 100 physical or digital products from a CSV spreadsheet. Download the template, fill it in, choose the file and preview your rows before submitting. All imported products enter admin review.</p><div class="dash-actions"><button type="button" class="dash-action" id="bulk-template-download">Download CSV template</button><label class="dash-action primary bulk-file-label" for="bulk-product-file">Choose CSV file</label><input id="bulk-product-file" type="file" accept=".csv,text/csv" hidden></div><p class="upload-state" id="bulk-upload-status" aria-live="polite">CSV only · Maximum 100 products per upload.</p><div id="bulk-preview-wrap" hidden><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Row</th><th>Product</th><th>Category</th><th>Type</th><th>Price</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div><div class="dash-actions"><button type="button" class="button button-primary" id="bulk-submit-button" disabled>Submit valid products for review</button><button type="button" class="dash-action" id="bulk-clear-button">Clear file</button></div></div></div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>${products.map(p=>`<tr><td><div class="seller-product-cell">${p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':''}<strong>${html(p.name)}</strong>${p.variants?.length?'<small class="seller-variant-stock">'+p.variants.map(v=>html(v.name)+': '+Number(v.stock_qty)).join(' · ')+'</small>':''}</div></td><td>${money(p.price_kobo)}</td><td>${html(p.product_type)}</td><td>${p.product_type==='digital'?'—':p.stock_qty}</td><td>${statusPill(p.status)}</td><td><button class="dash-action" data-edit-product="${p.id}">Edit</button></td></tr>`).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6)}</tbody></table></div></div>`;
+    el.innerHTML=`<div class="dash-panel"><div class="dashboard-head"><div><h3>Your products</h3><p class="modal-intro">Upload physical goods or digital products. Every new or edited listing enters review before it goes live.</p></div><button class="dash-action primary" id="add-product-button">Add product +</button></div><div class="metric-grid">${renderMetric('Published',counts.active)}${renderMetric('Awaiting review',counts.pending)}${renderMetric('Drafts',counts.draft)}${renderMetric('Needs attention',counts.rejected)}${renderMetric('Low stock (≤5)',lowStock.length)}</div><div class="dash-panel seller-bulk-import"><h3>Bulk product upload</h3><p class="modal-intro">Import up to 100 physical or digital products from a CSV spreadsheet. Download the template, fill it in, choose the file and preview your rows before submitting. All imported products enter admin review.</p><div class="dash-actions"><button type="button" class="dash-action" id="bulk-template-download">Download CSV template</button><label class="dash-action primary bulk-file-label" for="bulk-product-file">Choose CSV file</label><input id="bulk-product-file" type="file" accept=".csv,text/csv" hidden></div><p class="upload-state" id="bulk-upload-status" aria-live="polite">CSV only · Maximum 100 products per upload.</p><div id="bulk-preview-wrap" hidden><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Row</th><th>Product</th><th>Category</th><th>Type</th><th>Price</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div><div class="dash-actions"><button type="button" class="button button-primary" id="bulk-submit-button" disabled>Submit valid products for review</button><button type="button" class="dash-action" id="bulk-clear-button">Clear file</button></div></div></div><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Product</th><th>Price</th><th>Type</th><th>Stock</th><th>Status</th><th>Action</th></tr></thead><tbody>${products.map(p=>`<tr><td><div class="seller-product-cell">${p.image_url?'<img src="'+escAttr(p.image_url)+'" alt="" loading="lazy">':''}<strong>${html(p.name)}</strong></div></td><td>${money(p.price_kobo)}</td><td>${html(p.product_type)}</td><td>${p.product_type==='digital'?'—':p.stock_qty}</td><td>${statusPill(p.status)}</td><td><button class="dash-action" data-edit-product="${p.id}">Edit</button></td></tr>`).join('')||tableEmpty('You have not added a product yet. Use Add product to list your first item.',6)}</tbody></table></div></div>`;
   } else if(tab==='orders') {
     el.innerHTML=`<div class="dash-panel"><h3>Customer orders</h3><div class="dash-table-wrap"><table class="dash-table"><thead><tr><th>Order / item</th><th>Customer</th><th>Quantity</th><th>Delivery</th><th>Update</th></tr></thead><tbody>${(data.orders||[]).map(o=>`<tr><td><strong>${html(o.order_number)}</strong><br>${html(o.product_name)}<br><small>${formatDate(o.created_at)}</small></td><td>${html(o.recipient_name)}<br>${html(o.phone)}<br><small>${html([o.shipping_address?.line1,o.shipping_address?.city,o.shipping_address?.state].filter(Boolean).join(', '))}</small></td><td>${o.quantity}</td><td>${statusPill(o.fulfillment_status)}${o.tracking_number?`<br><small>${html(o.tracking_carrier)} ${html(o.tracking_number)}</small>`:''}</td><td><div class="dash-actions"><button class="dash-action" data-fulfill="${o.id}" data-status="processing">Processing</button><button class="dash-action primary" data-fulfill="${o.id}" data-status="dispatched">Dispatch / add tracking</button></div><small>Buyer confirms receipt in their order history.</small></td></tr>`).join('')||tableEmpty('No paid orders yet.',5)}</tbody></table></div></div>`;
   } else if(tab==='disputes') {
@@ -603,12 +603,12 @@ function openProductEditor(product) {
     $('#product-type').value=product.product_type||'physical';
     $('#product-price').value=Number(product.price_kobo)/100;
     $('#product-compare').value=product.compare_at_kobo?Number(product.compare_at_kobo)/100:'';
-    $('#product-stock').value=product.stock_qty||1;
+    $('#product-stock').value=product.stock_qty||1;$('#product-stock-preserved-note').hidden=!(product.variants||[]).length;
     $('#product-sku').value=product.sku||'';
     $('#product-image').value=product.image_url||'';
     $('#product-description').value=product.description||'';
     $('#digital-url').value=product.digital_delivery_url||'';
-    $('#product-variants').value=(product.variants||[]).map(v=>[v.name,v.sku,Number(v.price_kobo)===Number(product.price_kobo)?'':Number(v.price_kobo)/100,v.stock_qty,v.id].join(' | ')).join('\n');
+
   }
   renderProductImagePreview($('#product-image').value);
   updateProductType();
@@ -617,10 +617,11 @@ function openProductEditor(product) {
 }
 function updateProductType(){
   const isDigital=$('#product-type').value==='digital';
-  $('#product-stock-wrap').hidden=isDigital||!!$('#product-variants').value.trim();
-  $('#product-variants-wrap').hidden=isDigital;
+  const hasExistingOptions=!!($('#product-id').value&&state.sellerData?.products?.find(p=>p.id===$('#product-id').value)?.variants?.length);
+  $('#product-stock-wrap').hidden=isDigital||hasExistingOptions;
+  $('#product-stock-preserved-note').hidden=isDigital||!hasExistingOptions;
   $('#digital-url-wrap').hidden=!isDigital;
-  $('#product-stock').required=!isDigital&&!$('#product-variants').value.trim();
+  $('#product-stock').required=!isDigital&&!hasExistingOptions;
   $('#product-stock').disabled=isDigital;
   if(isDigital)$('#product-stock').value=0;
   else if(!Number($('#product-stock').value))$('#product-stock').value=1;
@@ -763,14 +764,11 @@ async function submitProduct(e){
   if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
   if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
   if(compare>0&&compare<=price){error.textContent='Previous price must be higher than the selling price.';$('#product-compare').focus();return;}
-  if(type==='physical'&&!$('#product-variants').value.trim()&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
+   if(type==='physical'&&!hasExistingOptions&&(!Number.isInteger(stock)||stock<1)){error.textContent='Enter a whole-number stock quantity of at least 1.';$('#product-stock').focus();return;}
   if(imageUrl&&!/^https:\/\//i.test(imageUrl)){error.textContent='Product photo URL must begin with https://.';$('#product-image').focus();return;}
   if(type==='digital'&&digitalUrl&&!/^https:\/\//i.test(digitalUrl)){error.textContent='Digital delivery link must begin with https://.';$('#digital-url').focus();return;}
-  const variantLines=$('#product-variants').value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  for(let i=0;i<variantLines.length;i++){const parts=variantLines[i].split('|').map(x=>x.trim());const vPrice=parts[2]?Number(parts[2]):0,vStock=Number(parts[3]);if(parts.length<3||!parts[0]||!Number.isInteger(vStock)||vStock<0||vStock>100000|| (parts[2]&&(!Number.isFinite(vPrice)||vPrice<1))){error.textContent='Check variation line '+(i+1)+'. Use: Option | SKU | Price (optional) | Stock.';return;}variants.push({name:parts[0],sku:parts[1]||'',price_kobo:vPrice?nairaToKobo(vPrice):null,stock_qty:vStock,id:parts[4]||''});}
-  if(variants.length>50){error.textContent='A product can have up to 50 variations.';return;}
   const payload={
-    id:$('#product-id').value,name,category_id:categoryId,product_type:type,variants,
+    id:$('#product-id').value,name,category_id:categoryId,product_type:type,
     price_kobo:nairaToKobo(price),compare_at_kobo:compare?nairaToKobo(compare):null,
     stock_qty:type==='digital'?0:stock,sku:$('#product-sku').value.trim(),
     image_url:imageUrl,description:$('#product-description').value.trim(),digital_delivery_url:digitalUrl
@@ -1050,7 +1048,6 @@ $('#dashboard-content').addEventListener('click',e=>{
   if(e.target.closest('#bulk-clear-button')){bulkImportRows=[];$('#bulk-product-file').value='';$('#bulk-preview-wrap').hidden=true;$('#bulk-upload-status').textContent='CSV only · Maximum 100 products per upload.';}
 });
 $('#product-type').addEventListener('change',updateProductType);
-$('#product-variants').addEventListener('input',updateProductType);
 $('#product-image-file').addEventListener('change',uploadProductImage);
 $('#product-image').addEventListener('input',e=>renderProductImagePreview(e.target.value));
 $('#product-image-clear').addEventListener('click',()=>{
