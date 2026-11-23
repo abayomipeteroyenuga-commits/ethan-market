@@ -573,6 +573,7 @@ function openSellerApplication() {
 }
 async function submitSellerApplication(e) {
   e.preventDefault(); $('#seller-error').textContent='';
+  if(type==='digital'&&hasExistingOptions){error.textContent='This listing has existing option inventory. Keep it as a physical product so customer orders remain correct.';$('#product-type').focus();return;}
   const payload={...growthPayload(),store_name:$('#store-name').value,slug:$('#store-slug').value,description:$('#store-description').value,phone:$('#seller-phone').value,whatsapp:$('#seller-whatsapp').value,business_type:$('#business-type').value,city:$('#seller-city').value,state:$('#seller-state').value,bank_name:$('#seller-bank').value,bank_code:$('#seller-bank-code').value,account_number:$('#seller-account').value,account_name:$('#seller-account-name').value};
   const submit=$('#seller-form button[type=submit]');submit.disabled=true;
   try {const data=await api('seller.apply',payload);state.seller=data.seller;closeModal('seller-modal');notify('Seller application submitted for review.');openDashboard('sell');}
@@ -760,7 +761,8 @@ async function submitProduct(e){
   const imageUrl=$('#product-image').value.trim();
   const digitalUrl=$('#digital-url').value.trim();
   if(name.length<3){error.textContent='Enter a product name with at least 3 characters.';$('#product-name').focus();return;}
-  let variants=[];
+  const editingProduct=state.sellerData?.products?.find(p=>p.id===$('#product-id').value);
+  const hasExistingOptions=!!editingProduct?.variants?.length;
   if(!categoryId){error.textContent='Please choose a product category.';$('#product-category').focus();return;}
   if(!Number.isFinite(price)||price<1){error.textContent='Enter a selling price of at least ₦1.';$('#product-price').focus();return;}
   if(compare>0&&compare<=price){error.textContent='Previous price must be higher than the selling price.';$('#product-compare').focus();return;}
